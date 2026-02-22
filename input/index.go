@@ -115,6 +115,16 @@ func (i *Input) Populate(payload any) error {
 			}
 		}
 
+		// Check flag tag (for CLI)
+		if tag := field.Tag.Get("flag"); tag != "" {
+			if value, ok := queries[tag]; ok {
+				if err := setFieldValue(fieldValue, value); err != nil {
+					return fmt.Errorf("failed to set flag field %s: %w", field.Name, err)
+				}
+				continue
+			}
+		}
+
 		// Check form tag
 		if tag := field.Tag.Get("form"); tag != "" {
 			if err := parseBody(); err != nil {

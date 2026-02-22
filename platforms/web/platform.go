@@ -7,13 +7,25 @@ type Platform struct {
 }
 
 func NewPlatform(options ...Option) *Platform {
-	config := &Config{}
+	config := &Config{
+		Name: "web",
+		Host: "localhost",
+		Port: 8080,
+	}
 
 	for _, option := range options {
 		option(config)
 	}
 
 	return &Platform{config}
+}
+
+func (p *Platform) Type() types.PlatformType {
+	return types.PlatformTypeWeb
+}
+
+func (p *Platform) Name() string {
+	return p.config.Name
 }
 
 func (p *Platform) Boot(container types.Container) (types.App, error) {

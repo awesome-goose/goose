@@ -2,7 +2,11 @@ package core
 
 import (
 	"fmt"
+	"os"
+	"os/signal"
 	"reflect"
+	"sync"
+	"syscall"
 
 	"github.com/awesome-goose/goose/input"
 	"github.com/awesome-goose/goose/types"
@@ -13,26 +17,51 @@ var ErrDuplicateRoute = fmt.Errorf("kernel: duplicate route detected")
 var ErrInvalidRoute = fmt.Errorf("kernel: invalid route detected")
 
 type kernel struct {
+	// Core components
 	router     types.RouterFinder
 	routes     types.Routes
 	serializer types.Serializer
 	traverser  types.Traverser
+
+	// Multi-platform support
+	runningApps  []types.App
+	childKernels []*kernel
+	mu           sync.Mutex
+	shutdownOnce sync.Once
 }
 
 func NewKernel() *kernel {
 	return &kernel{
-		router:     NewRouter(),
-		routes:     []types.Route{},
-		serializer: NewSerializer(),
-		traverser:  NewTraverser(),
+		router:       NewRouter(),
+		routes:       []types.Route{},
+		serializer:   NewSerializer(),
+		traverser:    NewTraverser(),
+		runningApps:  make([]types.App, 0),
+		childKernels: make([]*kernel, 0),
 	}
 }
 
-func (k *kernel) Start(platform types.Platform, module types.Module, initializers []func(container types.Container) error) (func() error, error) {
+// Start starts one or more platform instances
+// - Single instance: runs directly
+// - Multiple instances: API/Web run concurrently, CLI runs when `cli` arg is passed
+func (k *kernel) Start(instances ...*types.Instance) (func() error, error) {
+	if len(instances) == 0 {
+		return func() error { return nil }, fmt.Errorf("no instances provided")
+	}
+
+	// Single instance mode
+	if len(instances) == 1 {
+		return k.runSingle(instances[0])
+	}
+
+	// Multi-instance mode
+	return k.runMulti(instances)
+}
+
+// runSingle runs a single platform instance
+func (k *kernel) runSingle(inst *types.Instance) (func() error, error) {
 	stop := func() error {
-		return k.traverser.OnShutdownHooks().ExecuteAll(func(fn func(types.Kernel) error) error {
-			return fn(k)
-		})
+		return k.shutdown()
 	}
 
 	container := k.traverser.Container()
@@ -40,31 +69,199 @@ func (k *kernel) Start(platform types.Platform, module types.Module, initializer
 		container.Register(fn, "", true)
 	}
 
-	for _, initFn := range initializers {
-		err := initFn(container)
-		if err != nil {
+	for _, initFn := range inst.Initializers {
+		if err := initFn(container); err != nil {
 			return stop, err
 		}
 	}
 
-	err := k.traverser.Traverse(module)
-	if err != nil {
+	if err := k.traverser.Traverse(inst.Module); err != nil {
 		return stop, err
 	}
 
-	err = k.traverser.OnBootHooks().ExecuteAll(func(fn func(types.Kernel) error) error {
+	if err := k.traverser.OnBootHooks().ExecuteAll(func(fn func(types.Kernel) error) error {
 		return fn(k)
-	})
+	}); err != nil {
+		return stop, err
+	}
+
+	app, err := inst.Platform.Boot(container)
 	if err != nil {
 		return stop, err
 	}
 
-	app, err := platform.Boot(container)
+	k.mu.Lock()
+	k.runningApps = append(k.runningApps, app)
+	k.mu.Unlock()
+
+	err = app.Run(k.createHandler())
+	return stop, err
+}
+
+// runMulti runs multiple platform instances
+func (k *kernel) runMulti(instances []*types.Instance) (func() error, error) {
+	// Validate: only one CLI instance allowed
+	cliCount := 0
+	var cliInstance *types.Instance
+	var serverInstances []*types.Instance
+
+	for _, inst := range instances {
+		if inst.Type == types.PlatformTypeCLI {
+			cliCount++
+			cliInstance = inst
+		} else {
+			serverInstances = append(serverInstances, inst)
+		}
+	}
+
+	if cliCount > 1 {
+		return func() error { return nil }, fmt.Errorf("only one CLI instance is allowed, found %d", cliCount)
+	}
+
+	// Check if CLI mode is requested via command line args
+	cliMode := len(os.Args) > 1 && os.Args[1] == "cli"
+
+	// If CLI mode requested but no CLI instance defined
+	if cliMode && cliInstance == nil {
+		return func() error { return nil }, fmt.Errorf("CLI mode requested but no CLI instance defined")
+	}
+
+	// If CLI mode, only run the CLI instance
+	if cliMode && cliInstance != nil {
+		return k.runCLI(cliInstance)
+	}
+
+	// Otherwise, run server instances concurrently
+	if len(serverInstances) == 0 {
+		if cliInstance != nil {
+			return k.runCLI(cliInstance)
+		}
+		return func() error { return nil }, fmt.Errorf("no runnable instances available")
+	}
+
+	return k.runServers(serverInstances)
+}
+
+// runCLI runs a CLI instance in the main goroutine (blocking)
+func (k *kernel) runCLI(inst *types.Instance) (func() error, error) {
+	childKernel := NewKernel()
+	k.mu.Lock()
+	k.childKernels = append(k.childKernels, childKernel)
+	k.mu.Unlock()
+
+	stop := func() error {
+		return k.shutdown()
+	}
+
+	container := childKernel.traverser.Container()
+	for _, fn := range services {
+		container.Register(fn, "", true)
+	}
+
+	for _, initFn := range inst.Initializers {
+		if err := initFn(container); err != nil {
+			return stop, err
+		}
+	}
+
+	if err := childKernel.traverser.Traverse(inst.Module); err != nil {
+		return stop, err
+	}
+
+	if err := childKernel.traverser.OnBootHooks().ExecuteAll(func(fn func(types.Kernel) error) error {
+		return fn(childKernel)
+	}); err != nil {
+		return stop, err
+	}
+
+	app, err := inst.Platform.Boot(container)
 	if err != nil {
 		return stop, err
 	}
 
-	err = app.Run(func(context types.Context) error {
+	k.mu.Lock()
+	k.runningApps = append(k.runningApps, app)
+	k.mu.Unlock()
+
+	err = app.Run(childKernel.createHandler())
+	return stop, err
+}
+
+// runServers runs multiple server instances concurrently
+func (k *kernel) runServers(instances []*types.Instance) (func() error, error) {
+	stop := func() error {
+		return k.shutdown()
+	}
+
+	errChan := make(chan error, len(instances))
+	var wg sync.WaitGroup
+
+	for _, inst := range instances {
+		wg.Add(1)
+		go func(inst *types.Instance) {
+			defer wg.Done()
+
+			childKernel := NewKernel()
+			k.mu.Lock()
+			k.childKernels = append(k.childKernels, childKernel)
+			k.mu.Unlock()
+
+			container := childKernel.traverser.Container()
+			for _, fn := range services {
+				container.Register(fn, "", true)
+			}
+
+			for _, initFn := range inst.Initializers {
+				if err := initFn(container); err != nil {
+					errChan <- fmt.Errorf("[%s] initialization error: %w", inst.Name, err)
+					return
+				}
+			}
+
+			if err := childKernel.traverser.Traverse(inst.Module); err != nil {
+				errChan <- fmt.Errorf("[%s] module traversal error: %w", inst.Name, err)
+				return
+			}
+
+			if err := childKernel.traverser.OnBootHooks().ExecuteAll(func(fn func(types.Kernel) error) error {
+				return fn(childKernel)
+			}); err != nil {
+				errChan <- fmt.Errorf("[%s] boot hook error: %w", inst.Name, err)
+				return
+			}
+
+			app, err := inst.Platform.Boot(container)
+			if err != nil {
+				errChan <- fmt.Errorf("[%s] platform boot error: %w", inst.Name, err)
+				return
+			}
+
+			k.mu.Lock()
+			k.runningApps = append(k.runningApps, app)
+			k.mu.Unlock()
+
+			if err := app.Run(childKernel.createHandler()); err != nil {
+				errChan <- fmt.Errorf("[%s] runtime error: %w", inst.Name, err)
+			}
+		}(inst)
+	}
+
+	// Wait for shutdown signal or error
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case <-quit:
+		return stop, nil
+	case err := <-errChan:
+		k.shutdown()
+		return stop, err
+	}
+}
+
+// createHandler creates the request handler function
+func (k *kernel) createHandler() func(context types.Context) error {
+	return func(context types.Context) error {
 		routes := k.Routes()
 		route, params, err := k.router.Find(routes, context.Request().Method().String(), context.Request().Paths())
 		if err != nil {
@@ -74,8 +271,7 @@ func (k *kernel) Start(platform types.Platform, module types.Module, initializer
 		context.Request().PopulateParams(params)
 
 		for _, middleware := range route.Middlewares {
-			err := middleware.Handle(context)
-			if err != nil {
+			if err := middleware.Handle(context); err != nil {
 				return err
 			}
 		}
@@ -85,12 +281,10 @@ func (k *kernel) Start(platform types.Platform, module types.Module, initializer
 			return err
 		}
 
-		// Set custom headers from output (if any)
 		if headers := output.Headers(); headers != nil {
 			context.Response().SetHeaders(headers)
 		}
 
-		// Set content type if explicitly specified by output
 		if contentType := output.ContentType(); contentType != "" {
 			context.Response().SetHeader("Content-Type", contentType)
 		}
@@ -100,18 +294,39 @@ func (k *kernel) Start(platform types.Platform, module types.Module, initializer
 			return err
 		}
 
-		err = context.Response().Write(serialType, buf, output.Code())
-		if err != nil {
-			return err
+		return context.Response().Write(serialType, buf, output.Code())
+	}
+}
+
+// shutdown gracefully shuts down all running apps
+func (k *kernel) shutdown() error {
+	var shutdownErr error
+	k.shutdownOnce.Do(func() {
+		k.mu.Lock()
+		apps := k.runningApps
+		childKernels := k.childKernels
+		k.mu.Unlock()
+
+		// Shutdown all apps
+		for _, app := range apps {
+			if err := app.Shutdown(); err != nil && shutdownErr == nil {
+				shutdownErr = err
+			}
 		}
 
-		return nil
-	})
-	if err != nil {
-		return stop, err
-	}
+		// Execute shutdown hooks for main kernel
+		k.traverser.OnShutdownHooks().ExecuteAll(func(fn func(types.Kernel) error) error {
+			return fn(k)
+		})
 
-	return stop, nil
+		// Execute shutdown hooks for child kernels
+		for _, child := range childKernels {
+			child.traverser.OnShutdownHooks().ExecuteAll(func(fn func(types.Kernel) error) error {
+				return fn(child)
+			})
+		}
+	})
+	return shutdownErr
 }
 
 func (k *kernel) Router() types.RouterFinder {

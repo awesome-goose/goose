@@ -13,6 +13,6 @@ var (
 func renderEnv(s string) string {
 	return envVarRegex.ReplaceAllStringFunc(s, func(match string) string {
 		key := envVarRegex.FindStringSubmatch(match)[1]
-		return os.Getenv(key) // TODO: reaplce with env.Get(key, "")
+		return os.Getenv(key)
 	})
 }
