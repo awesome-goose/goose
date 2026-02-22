@@ -14,11 +14,6 @@ type RegisterAware interface {
 type ResolveAware interface {
 	OnResolve()
 }
-
-type CreateAware interface {
-	OnCreate()
-}
-
 type CloseAware interface {
 	OnClose() error
 }

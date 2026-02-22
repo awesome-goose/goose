@@ -226,7 +226,7 @@ func (c *Container) create(v reflect.Value, visited map[reflect.Type]bool) error
 		}
 	}
 
-	c.onCreate(v.Interface())
+	c.onRegister(v.Interface())
 
 	return nil
 }
@@ -487,11 +487,5 @@ func (c *Container) onRegister(instance any) {
 func (c *Container) onResolve(instance any) {
 	if resolver, ok := instance.(types.ResolveAware); ok {
 		resolver.OnResolve()
-	}
-}
-
-func (c *Container) onCreate(instance any) {
-	if creater, ok := instance.(types.CreateAware); ok {
-		creater.OnCreate()
 	}
 }

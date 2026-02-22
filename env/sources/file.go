@@ -1,7 +1,7 @@
 package sources
 
 import (
-	"log"
+	"os"
 
 	"github.com/awesome-goose/goose/types"
 	"github.com/awesome-goose/goose/utils/path"
@@ -15,10 +15,15 @@ func NewFileEnvSource() *fileEnvSource {
 }
 
 // Load reads the .env file and populates the Env store
+// Silently ignores missing .env files
 func (v *fileEnvSource) Load(env types.Env) {
 	directory, err := path.AppRoot()
 	if err != nil {
-		log.Println("Error reading env directory", err)
+		return
+	}
+
+	envPath := directory + "/.env"
+	if _, err := os.Stat(envPath); os.IsNotExist(err) {
 		return
 	}
 
@@ -27,10 +32,8 @@ func (v *fileEnvSource) Load(env types.Env) {
 	viper.SetConfigType("env")
 	viper.AutomaticEnv()
 
-	err = viper.ReadInConfig()
-	if err != nil {
-		log.Println("Error reading env file", err)
-		return
+	if err := viper.ReadInConfig(); err != nil {
+		return // Silently ignore read errors
 	}
 
 	for _, key := range viper.AllKeys() {
