@@ -46,9 +46,29 @@ type Entity[T any] struct {
 	morphs     map[string]func(*T)
 	hooks      map[string]func(*T) error
 	sort       string
-	query      *Query
 
-	log types.Log `inject:""`
+	log   types.Log `inject:""`
+	query *Query    `inject:""`
+}
+
+func (r *Entity[T]) Hydrate(
+	name string,
+	searchable []string,
+	relations []string,
+	scope func() (string, []any),
+	unique func(*T) (any, []any),
+	morphs map[string]func(*T),
+	hooks map[string]func(*T) error,
+	sort string,
+) {
+	r.name = name
+	r.searchable = searchable
+	r.relations = relations
+	r.scope = scope
+	r.unique = unique
+	r.morphs = morphs
+	r.hooks = hooks
+	r.sort = sort
 }
 
 // With returns a copy of Entity using the given database connection

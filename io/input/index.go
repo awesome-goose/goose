@@ -151,10 +151,17 @@ func (i *Input) Populate(payload any) error {
 			if err := parseBody(); err != nil {
 				return err
 			}
+
 			if jsonData != nil {
-				if value, ok := jsonData[tagName]; ok {
-					if err := setFieldFromJSON(fieldValue, value); err != nil {
+				if strings.HasSuffix(tag, ",merge") {
+					if err := setFieldFromJSON(fieldValue, jsonData); err != nil {
 						return fmt.Errorf("failed to set json field %s: %w", field.Name, err)
+					}
+				} else {
+					if value, ok := jsonData[tagName]; ok {
+						if err := setFieldFromJSON(fieldValue, value); err != nil {
+							return fmt.Errorf("failed to set json field %s: %w", field.Name, err)
+						}
 					}
 				}
 			}

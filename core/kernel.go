@@ -8,7 +8,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/awesome-goose/goose/input"
+	"github.com/awesome-goose/goose/io/input"
 	"github.com/awesome-goose/goose/types"
 )
 
