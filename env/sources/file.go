@@ -17,7 +17,6 @@ func NewFileEnvSource() *fileEnvSource {
 
 // Load reads the .env file and populates the Env store
 // Silently ignores missing .env files
-// Uses direct parsing to preserve key casing (viper lowercases keys)
 func (v *fileEnvSource) Load(env types.Env) {
 	directory, err := path.AppRoot()
 	if err != nil {
@@ -26,7 +25,7 @@ func (v *fileEnvSource) Load(env types.Env) {
 	envPath := directory + "/.env"
 	file, err := os.Open(envPath)
 	if err != nil {
-		return // Silently ignore missing or unreadable .env files
+		return
 	}
 	defer file.Close()
 
