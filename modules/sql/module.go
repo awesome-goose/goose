@@ -15,6 +15,7 @@ import (
 
 type sqlModule struct {
 	config *Config
+	db     *Db
 
 	isRoot bool
 }
@@ -39,9 +40,9 @@ func (m *sqlModule) Declarations() []any {
 	}
 }
 
-func (m *sqlModule) Boot(k types.Kernel) error {
-	var db *Db
-	container := k.Container()
+// Configure registers infrastructure dependencies before declarations are created.
+// This ensures *Db is available for injection into Entity structs.
+func (m *sqlModule) Configure(container types.Container) error {
 	if m.isRoot {
 		container.Register(
 			func() *Config {
@@ -54,16 +55,35 @@ func (m *sqlModule) Boot(k types.Kernel) error {
 		var log types.Log
 		err := container.Resolve(&log, "")
 		if err != nil {
-			panic(err)
+			return fmt.Errorf("failed to resolve log: %w", err)
 		}
 
-		db = m.initialize(log)
+		db := m.initialize(log)
+		m.db = db
 
 		container.Register(func() *Db {
 			return db
 		}, "", true)
+	}
+	return nil
+}
+
+func (m *sqlModule) Boot(k types.Kernel) error {
+	var db *Db
+	container := k.Container()
+
+	// For root module, use the already-initialized db
+	// For child modules, resolve from container
+	if m.isRoot {
+		db = m.db
 	} else {
-		container.Resolve(&db, "")
+		if err := container.Resolve(&db, ""); err != nil {
+			return fmt.Errorf("failed to resolve database: %w", err)
+		}
+	}
+
+	if db == nil {
+		panic("No database configured")
 	}
 
 	runner := &Runner{db}

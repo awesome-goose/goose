@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"unsafe"
@@ -159,6 +160,16 @@ func (r *Registry) topologicalSort(root types.Module) ([]types.Module, error) {
 		inStack[modType] = true
 		visited[modType] = true
 
+		modInstance, err := r.container.Create(mod)
+		if err != nil {
+			return err
+		}
+
+		mod, ok := modInstance.(types.Module)
+		if !ok {
+			return fmt.Errorf("registry: instance created from module is not a module")
+		}
+
 		// Visit all imports first (dependencies)
 		for _, imp := range mod.Imports() {
 			if err := visit(imp); err != nil {
@@ -199,6 +210,15 @@ func (r *Registry) processModule(mod types.Module) error {
 		importedDeclarations:  make(map[reflect.Type]*types.DeclarationInfo),
 		exports:               make(map[reflect.Type]*types.DeclarationInfo),
 		availableDeclarations: make(map[reflect.Type]*types.DeclarationInfo),
+	}
+
+	// Run module Configure hook before creating declarations
+	// This allows modules to register infrastructure dependencies (e.g., *Db)
+	// that their declarations may need during injection
+	if configurable, ok := mod.(types.Configurable); ok {
+		if err := configurable.Configure(r.container); err != nil {
+			return fmt.Errorf("module %s Configure failed: %w", modType.String(), err)
+		}
 	}
 
 	// Register declarations
