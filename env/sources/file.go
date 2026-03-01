@@ -51,6 +51,7 @@ func (v *fileEnvSource) Load(env types.Env) {
 					inMultiline = false
 					pendingValue = expandVars(pendingValue, env)
 					env.Set(pendingKey, pendingValue)
+					os.Setenv(pendingKey, pendingValue)
 					pendingKey, pendingValue = "", ""
 				}
 				continue
@@ -60,6 +61,7 @@ func (v *fileEnvSource) Load(env types.Env) {
 				inMultiline = false
 				pendingValue = expandVars(pendingValue, env)
 				env.Set(pendingKey, pendingValue)
+				os.Setenv(pendingKey, pendingValue)
 				pendingKey, pendingValue = "", ""
 			}
 			continue
@@ -129,6 +131,7 @@ func (v *fileEnvSource) Load(env types.Env) {
 
 		value = expandVars(value, env)
 		env.Set(key, value)
+		os.Setenv(key, value)
 	}
 }
 

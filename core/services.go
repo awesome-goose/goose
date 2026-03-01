@@ -34,11 +34,11 @@ var (
 				),
 			}, nil
 		},
-		func(path config.AppConfigPath) (types.Config, error) {
-			return config.NewConfig(path)
-		},
 		func(path config.AppConfigPath) (types.Env, error) {
 			return env.NewEnv(), nil
+		},
+		func(path config.AppConfigPath, _ types.Env) (types.Config, error) {
+			return config.NewConfig(path)
 		},
 		func(channel log.AppLogChannel, loggers []*log.Logger) (types.Log, error) {
 			return log.NewLog(channel, loggers...), nil
