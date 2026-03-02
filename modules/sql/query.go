@@ -2,18 +2,14 @@ package sql
 
 import (
 	"database/sql"
-	"errors"
-	"fmt"
 	"regexp"
 
+	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/types"
 	"github.com/awesome-goose/goose/utils/props"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
-
-// ErrNotFound is returned when a record is not found
-var ErrNotFound = errors.New("record not found")
 
 // validIdentifier matches safe SQL identifiers (alphanumeric, underscores, and dots)
 var validIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$`)
@@ -57,7 +53,7 @@ func (r *Query) Count(table string, query any, args ...any) (int64, error) {
 // Sum returns the sum of a column for records matching the query
 func (r *Query) Sum(table string, column string, query any, args ...any) (int64, error) {
 	if !validIdentifier.MatchString(column) {
-		return 0, fmt.Errorf("invalid column name: %s", column)
+		return 0, errors.ErrInvalidColumnName.WithMeta(column)
 	}
 
 	var result sql.NullInt64
@@ -71,7 +67,7 @@ func (r *Query) Sum(table string, column string, query any, args ...any) (int64,
 // Avg returns the average of a column for records matching the query
 func (r *Query) Avg(table string, column string, query any, args ...any) (float64, error) {
 	if !validIdentifier.MatchString(column) {
-		return 0, fmt.Errorf("invalid column name: %s", column)
+		return 0, errors.ErrInvalidColumnName.WithMeta(column)
 	}
 
 	var result sql.NullFloat64
@@ -85,7 +81,7 @@ func (r *Query) Avg(table string, column string, query any, args ...any) (float6
 // Min returns the minimum value of a column for records matching the query
 func (r *Query) Min(table string, column string, query any, args ...any) (int64, error) {
 	if !validIdentifier.MatchString(column) {
-		return 0, fmt.Errorf("invalid column name: %s", column)
+		return 0, errors.ErrInvalidColumnName.WithMeta(column)
 	}
 
 	var result sql.NullInt64
@@ -94,7 +90,7 @@ func (r *Query) Min(table string, column string, query any, args ...any) (int64,
 		return 0, err
 	}
 	if !result.Valid {
-		return 0, ErrNotFound
+		return 0, errors.ErrRecordNotFound
 	}
 	return result.Int64, nil
 }
@@ -102,7 +98,7 @@ func (r *Query) Min(table string, column string, query any, args ...any) (int64,
 // Max returns the maximum value of a column for records matching the query
 func (r *Query) Max(table string, column string, query any, args ...any) (int64, error) {
 	if !validIdentifier.MatchString(column) {
-		return 0, fmt.Errorf("invalid column name: %s", column)
+		return 0, errors.ErrInvalidColumnName.WithMeta(column)
 	}
 
 	var result sql.NullInt64
@@ -111,7 +107,7 @@ func (r *Query) Max(table string, column string, query any, args ...any) (int64,
 		return 0, err
 	}
 	if !result.Valid {
-		return 0, ErrNotFound
+		return 0, errors.ErrRecordNotFound
 	}
 	return result.Int64, nil
 }
@@ -163,7 +159,7 @@ func (r *Query) First(table string, columns []string, sort string, query any, ar
 		return nil, err
 	}
 	if len(record) == 0 {
-		return nil, ErrNotFound
+		return nil, errors.ErrRecordNotFound
 	}
 	return props.Props(record), nil
 }
@@ -293,7 +289,7 @@ func (r *Query) Find(table string, columns []string, sort string, limit int, off
 // Delete removes records matching the query
 func (r *Query) Delete(table string, query any, args ...any) (int64, error) {
 	if query == nil {
-		return 0, errors.New("delete requires a where clause; use DeleteAll for deleting all records")
+		return 0, errors.ErrDeleteRequiresWhereClause
 	}
 	result := r.db.Table(table).Where(query, args...).Delete(nil)
 	return result.RowsAffected, result.Error

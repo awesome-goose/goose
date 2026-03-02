@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/types"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
@@ -55,7 +56,7 @@ func (m *sqlModule) Configure(container types.Container) error {
 		var log types.Log
 		err := container.Resolve(&log, "")
 		if err != nil {
-			return fmt.Errorf("failed to resolve log: %w", err)
+			return errors.ErrFailedToResolveLog.WithError(err)
 		}
 
 		db := m.initialize(log)
@@ -78,12 +79,12 @@ func (m *sqlModule) Boot(k types.Kernel) error {
 		db = m.db
 	} else {
 		if err := container.Resolve(&db, ""); err != nil {
-			return fmt.Errorf("failed to resolve database: %w", err)
+			return errors.ErrFailedToResolveDatabase.WithError(err)
 		}
 	}
 
 	if db == nil {
-		panic("No database configured")
+		panic(errors.ErrNoDatabaseConfigured.Error())
 	}
 
 	runner := &Runner{db}
@@ -92,14 +93,14 @@ func (m *sqlModule) Boot(k types.Kernel) error {
 	for _, migration := range m.config.Migrations {
 		err := runner.Run(migration)
 		if err != nil {
-			panic(fmt.Sprintf("failed to run migration: %v", err))
+			panic(errors.ErrFailedToRunMigration.WithError(err).Error())
 		}
 	}
 
 	for _, seeder := range m.config.Seeders {
 		err := runner.Run(seeder)
 		if err != nil {
-			panic(fmt.Sprintf("failed to run seeder: %v", err))
+			panic(errors.ErrFailedToRunSeeder.WithError(err).Error())
 		}
 	}
 

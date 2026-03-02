@@ -2,20 +2,7 @@ package cron
 
 import (
 	"context"
-	"errors"
 	"time"
-)
-
-// Common errors
-var (
-	ErrJobNotFound    = errors.New("cron job not found")
-	ErrJobExpired     = errors.New("cron job expired")
-	ErrJobLocked      = errors.New("cron job locked by another worker")
-	ErrShuttingDown   = errors.New("cron service is shutting down")
-	ErrJobTimeout     = errors.New("cron job execution timed out")
-	ErrRetryExhausted = errors.New("retry limit exceeded")
-	ErrInvalidHandler = errors.New("invalid cron handler")
-	ErrInvalidPattern = errors.New("invalid cron pattern")
 )
 
 // Job status constants

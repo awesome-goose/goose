@@ -3,12 +3,13 @@ package queues
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	stderrors "errors"
 	"fmt"
 	"runtime/debug"
 	"sync"
 	"time"
 
+	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/modules/sql"
 	"github.com/awesome-goose/goose/types"
 	"github.com/google/uuid"
@@ -159,7 +160,7 @@ func (q *Queue) Push(queueName string, jobName string, data any, config *JobConf
 				// Job already exists, return it
 				return &existingJob, nil
 			}
-			if !errors.Is(err, gorm.ErrRecordNotFound) {
+			if !stderrors.Is(err, gorm.ErrRecordNotFound) {
 				return nil, err
 			}
 		}
@@ -391,7 +392,7 @@ func (q *Queue) Pop(queueName string, jobName string) (*QueueJob, error) {
 	var existingQueue QueueQueue
 	err := q.db.DB.Where("name = ?", queueName).First(&existingQueue).Error
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil // No queue found, return nil
 		}
 		return nil, err
@@ -466,15 +467,15 @@ func (q *Queue) Pop(queueName string, jobName string) (*QueueJob, error) {
 func (q *Queue) Log(jobId string, status string, output any) (*QueueJob, error) {
 	// Validate status
 	if status != JobStatusSuccess && status != JobStatusFailed {
-		return nil, errors.New("invalid status: must be 'success' or 'failed'")
+		return nil, errors.ErrQueueInvalidStatus.WithDetail(status)
 	}
 
 	// Get the job
 	var job QueueJob
 	err := q.db.DB.Where("id = ?", jobId).First(&job).Error
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrJobNotFound
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.ErrQueueJobNotFound
 		}
 		return nil, err
 	}
@@ -533,15 +534,15 @@ func (q *Queue) Retry(jobId string) error {
 	var job QueueJob
 	err := q.db.DB.Where("id = ?", jobId).First(&job).Error
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrJobNotFound
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return errors.ErrQueueJobNotFound
 		}
 		return err
 	}
 
 	// Check if retry limit exceeded
 	if job.RetryCount >= job.RetryLimit {
-		return errors.New("retry limit exceeded")
+		return errors.ErrQueueRetryExhausted
 	}
 
 	now := time.Now().UTC()
@@ -574,8 +575,8 @@ func (q *Queue) GetQueue(name string) (*QueueQueue, error) {
 	var queue QueueQueue
 	err := q.db.DB.Where("name = ?", name).First(&queue).Error
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrQueueNotFound
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.ErrQueueNotFound
 		}
 		return nil, err
 	}
@@ -587,8 +588,8 @@ func (q *Queue) GetJob(id string) (*QueueJob, error) {
 	var job QueueJob
 	err := q.db.DB.Where("id = ?", id).First(&job).Error
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrJobNotFound
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.ErrQueueJobNotFound
 		}
 		return nil, err
 	}
@@ -613,8 +614,8 @@ func (q *Queue) ListJobs(queueName string, status string, limit int) ([]QueueJob
 		var queue QueueQueue
 		err := q.db.DB.Where("name = ?", queueName).First(&queue).Error
 		if err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil, ErrQueueNotFound
+			if stderrors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, errors.ErrQueueNotFound
 			}
 			return nil, err
 		}
@@ -643,15 +644,15 @@ func (q *Queue) Cancel(jobId string) error {
 	var job QueueJob
 	err := q.db.DB.Where("id = ?", jobId).First(&job).Error
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrJobNotFound
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return errors.ErrQueueJobNotFound
 		}
 		return err
 	}
 
 	// Can only cancel new jobs
 	if job.Status != JobStatusNew {
-		return errors.New("can only cancel jobs with 'new' status")
+		return errors.ErrQueueJobCancelNotAllowed
 	}
 
 	now := time.Now().UTC()
@@ -945,7 +946,7 @@ func (q *Queue) executeJobWithTimeout(parentCtx context.Context, job *QueueJob, 
 		return result, err
 	case <-ctx.Done():
 		if ctx.Err() == context.DeadlineExceeded {
-			return nil, ErrJobTimeout
+			return nil, errors.ErrQueueJobTimeout
 		}
 		return nil, ctx.Err()
 	}

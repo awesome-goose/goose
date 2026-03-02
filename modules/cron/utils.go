@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/modules/sql"
 )
 
@@ -213,7 +214,7 @@ func matchCronField(field string, value, min, max int) bool {
 // GetNextRun calculates the next run time for a cron pattern
 func GetNextRun(pattern string, from time.Time) (time.Time, error) {
 	if !IsValidCronPattern(pattern) {
-		return time.Time{}, ErrInvalidPattern
+		return time.Time{}, errors.ErrCronInvalidPattern
 	}
 
 	// Start from the next minute
@@ -229,7 +230,7 @@ func GetNextRun(pattern string, from time.Time) (time.Time, error) {
 		next = next.Add(time.Minute)
 	}
 
-	return time.Time{}, ErrInvalidPattern
+	return time.Time{}, errors.ErrCronInvalidPattern
 }
 
 // CalculateBackoff calculates exponential backoff delay

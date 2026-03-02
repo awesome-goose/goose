@@ -1,20 +1,16 @@
 package core
 
 import (
-	"fmt"
 	"os"
 	"os/signal"
 	"reflect"
 	"sync"
 	"syscall"
 
+	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/io/input"
 	"github.com/awesome-goose/goose/types"
 )
-
-// ErrDuplicateRoute is returned when attempting to add a route that already exists.
-var ErrDuplicateRoute = fmt.Errorf("kernel: duplicate route detected")
-var ErrInvalidRoute = fmt.Errorf("kernel: invalid route detected")
 
 type kernel struct {
 	// Core components
@@ -46,7 +42,7 @@ func NewKernel() *kernel {
 // - Multiple instances: API/Web run concurrently, CLI runs when `cli` arg is passed
 func (k *kernel) Start(instances ...*types.Instance) (func() error, error) {
 	if len(instances) == 0 {
-		return func() error { return nil }, fmt.Errorf("no instances provided")
+		return func() error { return nil }, errors.ErrNoInstancesProvided
 	}
 
 	// Single instance mode
@@ -115,7 +111,7 @@ func (k *kernel) runMulti(instances []*types.Instance) (func() error, error) {
 	}
 
 	if cliCount > 1 {
-		return func() error { return nil }, fmt.Errorf("only one CLI instance is allowed, found %d", cliCount)
+		return func() error { return nil }, errors.ErrMultipleCLIInstances.WithMeta(cliCount)
 	}
 
 	// Check if CLI mode is requested via command line args
@@ -123,7 +119,7 @@ func (k *kernel) runMulti(instances []*types.Instance) (func() error, error) {
 
 	// If CLI mode requested but no CLI instance defined
 	if cliMode && cliInstance == nil {
-		return func() error { return nil }, fmt.Errorf("CLI mode requested but no CLI instance defined")
+		return func() error { return nil }, errors.ErrCLIModeNoCLIInstance
 	}
 
 	// If CLI mode, only run the CLI instance
@@ -136,7 +132,7 @@ func (k *kernel) runMulti(instances []*types.Instance) (func() error, error) {
 		if cliInstance != nil {
 			return k.runCLI(cliInstance)
 		}
-		return func() error { return nil }, fmt.Errorf("no runnable instances available")
+		return func() error { return nil }, errors.ErrNoRunnableInstances
 	}
 
 	return k.runServers(serverInstances)
@@ -213,26 +209,26 @@ func (k *kernel) runServers(instances []*types.Instance) (func() error, error) {
 
 			for _, initFn := range inst.Initializers {
 				if err := initFn(container); err != nil {
-					errChan <- fmt.Errorf("[%s] initialization error: %w", inst.Name, err)
+					errChan <- errors.ErrInitializationError.WithError(err).WithMeta(inst.Name)
 					return
 				}
 			}
 
 			if err := childKernel.traverser.Traverse(inst.Module); err != nil {
-				errChan <- fmt.Errorf("[%s] module traversal error: %w", inst.Name, err)
+				errChan <- errors.ErrModuleTraversalError.WithError(err).WithMeta(inst.Name)
 				return
 			}
 
 			if err := childKernel.traverser.OnBootHooks().ExecuteAll(func(fn func(types.Kernel) error) error {
 				return fn(childKernel)
 			}); err != nil {
-				errChan <- fmt.Errorf("[%s] boot hook error: %w", inst.Name, err)
+				errChan <- errors.ErrBootHookError.WithError(err).WithMeta(inst.Name)
 				return
 			}
 
 			app, err := inst.Platform.Boot(container)
 			if err != nil {
-				errChan <- fmt.Errorf("[%s] platform boot error: %w", inst.Name, err)
+				errChan <- errors.ErrPlatformBootError.WithError(err).WithMeta(inst.Name)
 				return
 			}
 
@@ -241,7 +237,7 @@ func (k *kernel) runServers(instances []*types.Instance) (func() error, error) {
 			k.mu.Unlock()
 
 			if err := app.Run(childKernel.createHandler()); err != nil {
-				errChan <- fmt.Errorf("[%s] runtime error: %w", inst.Name, err)
+				errChan <- errors.ErrRuntimeError.WithError(err).WithMeta(inst.Name)
 			}
 		}(inst)
 	}
@@ -341,12 +337,12 @@ func (k *kernel) AppendRoutes(routes ...types.Route) ([]types.Route, error) {
 	for _, newRoute := range routes {
 		// Only validate handler if the route has one (group routes might not have handlers)
 		if newRoute.Handler != nil && !k.isValidHandler(&newRoute) {
-			return k.routes, fmt.Errorf("%w: %s %s", ErrInvalidRoute, newRoute.Method, newRoute.Path)
+			return k.routes, errors.ErrInvalidRoute.WithMeta(map[string]any{"method": newRoute.Method, "path": newRoute.Path})
 		}
 
 		for _, existingRoute := range k.routes {
 			if existingRoute.Equals(&newRoute) {
-				return k.routes, fmt.Errorf("%w: %s %s", ErrDuplicateRoute, newRoute.Method, newRoute.Path)
+				return k.routes, errors.ErrDuplicateRoute.WithMeta(map[string]any{"method": newRoute.Method, "path": newRoute.Path})
 			}
 		}
 		k.routes = append(k.routes, newRoute)
@@ -367,35 +363,35 @@ func (k *kernel) processHandler(route *types.Route, context types.Context) (type
 	switch handler := route.Handler.(type) {
 	case []any:
 		if len(handler) != 2 {
-			return nil, fmt.Errorf("invalid handler format: expected [controller, string], got %v", handler)
+			return nil, errors.ErrInvalidHandlerFormat.WithMeta(handler)
 		}
 
 		controller := handler[0]
 		methodName, ok := handler[1].(string)
 		if !ok {
-			return nil, fmt.Errorf("invalid handler format: method name must be a string, got %T", handler[1])
+			return nil, errors.ErrMethodNameNotString.WithMeta(handler[1])
 		}
 
 		resolvedController, err := k.Container().Create(controller)
 		if err != nil {
-			return nil, fmt.Errorf("failed to make controller: %w", err)
+			return nil, errors.ErrFailedToMakeController.WithError(err)
 		}
 
 		controllerValue := reflect.ValueOf(resolvedController)
 		method := controllerValue.MethodByName(methodName)
 
 		if !method.IsValid() {
-			return nil, fmt.Errorf("method %s not found on controller %T", methodName, resolvedController)
+			return nil, errors.ErrMethodNotFound.WithMeta(map[string]any{"method": methodName, "controller": resolvedController})
 		}
 
 		methodType := method.Type()
 		if methodType.NumIn() != 1 {
-			return nil, fmt.Errorf("method %s must have exactly 1 argument, got %d", methodName, methodType.NumIn())
+			return nil, errors.ErrMethodWrongArgCount.WithMeta(map[string]any{"method": methodName, "count": methodType.NumIn()})
 		}
 
 		argType := methodType.In(0)
 		if argType.Kind() != reflect.Ptr || argType.Elem().Kind() != reflect.Struct {
-			return nil, fmt.Errorf("method %s argument must be a pointer to a struct, got %v", methodName, argType)
+			return nil, errors.ErrMethodArgNotPtrStruct.WithMeta(map[string]any{"method": methodName, "type": argType})
 		}
 
 		argPtr := reflect.New(argType.Elem())
@@ -403,7 +399,7 @@ func (k *kernel) processHandler(route *types.Route, context types.Context) (type
 		inp := input.NewInput(context)
 		err = inp.Populate(argPtr.Interface())
 		if err != nil {
-			return nil, fmt.Errorf("failed to hydrate input struct: %w", err)
+			return nil, errors.ErrFailedToHydrateInput.WithError(err)
 		}
 
 		args := []reflect.Value{argPtr}
@@ -428,7 +424,7 @@ func (k *kernel) processHandler(route *types.Route, context types.Context) (type
 			input := input.NewInput(context)
 			err := input.Populate(paramPtr.Interface())
 			if err != nil {
-				return nil, fmt.Errorf("failed to hydrate input struct: %w", err)
+				return nil, errors.ErrFailedToHydrateInput.WithError(err)
 			}
 
 			results := handlerValue.Call([]reflect.Value{paramPtr})
@@ -436,7 +432,7 @@ func (k *kernel) processHandler(route *types.Route, context types.Context) (type
 				output = (results[0].Interface()).(types.Output)
 			}
 		} else {
-			return nil, fmt.Errorf("unsupported handler type: %T", route.Handler)
+			return nil, errors.ErrUnsupportedHandlerType.WithMeta(route.Handler)
 		}
 	}
 

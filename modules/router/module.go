@@ -1,9 +1,9 @@
 package router
 
 import (
-	"errors"
 	"sync"
 
+	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/types"
 )
 
@@ -58,7 +58,7 @@ func (m *routerModule) Boot(k types.Kernel) error {
 
 			router, ok = resolvedRouter.Instance.(types.Router)
 			if !ok {
-				return errors.New("invalid router instance")
+				return errors.ErrInvalidRouterInstance
 			}
 		}
 

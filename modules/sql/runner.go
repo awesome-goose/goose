@@ -3,6 +3,8 @@ package sql
 import (
 	"fmt"
 	"time"
+
+	"github.com/awesome-goose/goose/errors"
 )
 
 type Runner struct {
@@ -19,7 +21,7 @@ func (r *Runner) Run(m Runnable) error {
 	// Check if this migration/seeder has already been executed
 	var count int64
 	if err := r.db.Model(&MigrationRecord{}).Where("name = ?", name).Count(&count).Error; err != nil {
-		return fmt.Errorf("failed to check migration status: %w", err)
+		return errors.ErrFailedToCheckMigrationStatus.WithError(err)
 	}
 	if count > 0 {
 		// Already executed, skip
@@ -40,7 +42,7 @@ func (r *Runner) Run(m Runnable) error {
 		case Migration:
 			recordType = MigrationRecordTypeMigration
 		default:
-			return fmt.Errorf("unknown migration type")
+			return errors.ErrUnknownMigrationType
 		}
 
 		return query.db.Create(&MigrationRecord{

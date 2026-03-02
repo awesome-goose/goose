@@ -1,10 +1,10 @@
 package core
 
 import (
-	"fmt"
 	"strings"
 	"sync"
 
+	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/types"
 )
 
@@ -75,7 +75,7 @@ func (r *router) Find(routes types.Routes, method string, paths []string) (*type
 		return foundRoute, params, nil
 	}
 
-	return nil, nil, fmt.Errorf("route not found for method %s and path %s", method, strings.Join(paths, "/"))
+	return nil, nil, errors.ErrRouteNotFound.WithMeta(map[string]any{"method": method, "path": strings.Join(paths, "/")})
 }
 
 func (r *router) findRecursive(currentRoutes types.Routes, method string, paths []string, collectedMiddlewares types.Middlewares, params map[string]string) (*types.Route, map[string]string, error) {

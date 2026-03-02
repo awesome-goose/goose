@@ -2,12 +2,12 @@ package input
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
 
+	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/types"
 	"github.com/awesome-goose/goose/utils/props"
 )
@@ -23,12 +23,12 @@ func NewInput(context types.Context) *Input {
 func (i *Input) Populate(payload any) error {
 	v := reflect.ValueOf(payload)
 	if v.Kind() != reflect.Ptr || v.IsNil() {
-		return fmt.Errorf("payload must be a non-nil pointer to a struct")
+		return errors.ErrPayloadMustBeNonNilPointer
 	}
 
 	v = v.Elem()
 	if v.Kind() != reflect.Struct {
-		return fmt.Errorf("payload must be a pointer to a struct")
+		return errors.ErrPayloadMustBePointerToStruct
 	}
 
 	t := v.Type()
@@ -79,7 +79,7 @@ func (i *Input) Populate(payload any) error {
 		if tag := field.Tag.Get("header"); tag != "" {
 			if values, ok := headers[tag]; ok && len(values) > 0 {
 				if err := setFieldValue(fieldValue, values[0]); err != nil {
-					return fmt.Errorf("failed to set header field %s: %w", field.Name, err)
+					return errors.ErrFailedToSetHeaderField.WithError(err).WithMeta(field.Name)
 				}
 				continue
 			}
@@ -89,7 +89,7 @@ func (i *Input) Populate(payload any) error {
 		if tag := field.Tag.Get("context"); tag != "" {
 			if value := i.context.GetValue(tag); value != nil {
 				if err := setFieldFromJSON(fieldValue, value); err != nil {
-					return fmt.Errorf("failed to set context field %s: %w", field.Name, err)
+					return errors.ErrFailedToSetContextField.WithError(err).WithMeta(field.Name)
 				}
 				continue
 			}
@@ -99,7 +99,7 @@ func (i *Input) Populate(payload any) error {
 		if tag := field.Tag.Get("param"); tag != "" {
 			if value, ok := params[tag]; ok {
 				if err := setFieldValue(fieldValue, value); err != nil {
-					return fmt.Errorf("failed to set param field %s: %w", field.Name, err)
+					return errors.ErrFailedToSetParamField.WithError(err).WithMeta(field.Name)
 				}
 				continue
 			}
@@ -109,7 +109,7 @@ func (i *Input) Populate(payload any) error {
 		if tag := field.Tag.Get("query"); tag != "" {
 			if value, ok := queries[tag]; ok {
 				if err := setFieldValue(fieldValue, value); err != nil {
-					return fmt.Errorf("failed to set query field %s: %w", field.Name, err)
+					return errors.ErrFailedToSetQueryField.WithError(err).WithMeta(field.Name)
 				}
 				continue
 			}
@@ -119,7 +119,7 @@ func (i *Input) Populate(payload any) error {
 		if tag := field.Tag.Get("flag"); tag != "" {
 			if value, ok := queries[tag]; ok {
 				if err := setFieldValue(fieldValue, value); err != nil {
-					return fmt.Errorf("failed to set flag field %s: %w", field.Name, err)
+					return errors.ErrFailedToSetFlagField.WithError(err).WithMeta(field.Name)
 				}
 				continue
 			}
@@ -133,7 +133,7 @@ func (i *Input) Populate(payload any) error {
 			if formData != nil {
 				if value := formData.Get(tag); value != "" {
 					if err := setFieldValue(fieldValue, value); err != nil {
-						return fmt.Errorf("failed to set form field %s: %w", field.Name, err)
+						return errors.ErrFailedToSetFormField.WithError(err).WithMeta(field.Name)
 					}
 					continue
 				}
@@ -155,12 +155,12 @@ func (i *Input) Populate(payload any) error {
 			if jsonData != nil {
 				if strings.HasSuffix(tag, ",merge") {
 					if err := setFieldFromJSON(fieldValue, jsonData); err != nil {
-						return fmt.Errorf("failed to set json field %s: %w", field.Name, err)
+						return errors.ErrFailedToSetJSONField.WithError(err).WithMeta(field.Name)
 					}
 				} else {
 					if value, ok := jsonData[tagName]; ok {
 						if err := setFieldFromJSON(fieldValue, value); err != nil {
-							return fmt.Errorf("failed to set json field %s: %w", field.Name, err)
+							return errors.ErrFailedToSetJSONField.WithError(err).WithMeta(field.Name)
 						}
 					}
 				}
@@ -203,10 +203,10 @@ func setFieldValue(field reflect.Value, value string) error {
 		if field.Type().Elem().Kind() == reflect.String {
 			field.Set(reflect.ValueOf(strings.Split(value, ",")))
 		} else {
-			return fmt.Errorf("unsupported slice type: %v", field.Type())
+			return errors.ErrUnsupportedSliceType.WithMeta(field.Type())
 		}
 	default:
-		return fmt.Errorf("unsupported field type: %v", field.Kind())
+		return errors.ErrUnsupportedFieldType.WithMeta(field.Kind())
 	}
 	return nil
 }
@@ -234,7 +234,7 @@ func setFieldFromJSON(field reflect.Value, value any) error {
 		case float64:
 			field.SetString(strconv.FormatFloat(v, 'f', -1, 64))
 		default:
-			field.SetString(fmt.Sprintf("%v", v))
+			field.SetString(strconv.FormatFloat(0, 'f', -1, 64))
 		}
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		switch v := value.(type) {
@@ -247,7 +247,7 @@ func setFieldFromJSON(field reflect.Value, value any) error {
 			}
 			field.SetInt(intVal)
 		default:
-			return fmt.Errorf("cannot convert %T to int", value)
+			return errors.ErrCannotConvertToInt.WithMeta(value)
 		}
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		switch v := value.(type) {
@@ -260,7 +260,7 @@ func setFieldFromJSON(field reflect.Value, value any) error {
 			}
 			field.SetUint(uintVal)
 		default:
-			return fmt.Errorf("cannot convert %T to uint", value)
+			return errors.ErrCannotConvertToUint.WithMeta(value)
 		}
 	case reflect.Float32, reflect.Float64:
 		switch v := value.(type) {
@@ -273,7 +273,7 @@ func setFieldFromJSON(field reflect.Value, value any) error {
 			}
 			field.SetFloat(floatVal)
 		default:
-			return fmt.Errorf("cannot convert %T to float", value)
+			return errors.ErrCannotConvertToFloat.WithMeta(value)
 		}
 	case reflect.Bool:
 		switch v := value.(type) {
@@ -286,7 +286,7 @@ func setFieldFromJSON(field reflect.Value, value any) error {
 			}
 			field.SetBool(boolVal)
 		default:
-			return fmt.Errorf("cannot convert %T to bool", value)
+			return errors.ErrCannotConvertToBool.WithMeta(value)
 		}
 	case reflect.Slice, reflect.Map, reflect.Struct:
 		// Re-marshal and unmarshal to handle complex types
@@ -307,7 +307,7 @@ func setFieldFromJSON(field reflect.Value, value any) error {
 		}
 		field.Set(newVal)
 	default:
-		return fmt.Errorf("unsupported field type for JSON: %v", field.Kind())
+		return errors.ErrUnsupportedJSONFieldType.WithMeta(field.Kind())
 	}
 	return nil
 }

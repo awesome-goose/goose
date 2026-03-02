@@ -4,12 +4,11 @@
 package core
 
 import (
-	"errors"
-	"fmt"
 	"reflect"
 	"sync"
 	"unsafe"
 
+	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/types"
 )
 
@@ -26,7 +25,7 @@ func (b binding) resolve(c *Container) (any, error) {
 	}
 
 	if b.resolver == nil {
-		return nil, errors.New("container: binding has no resolver and no instance")
+		return nil, errors.ErrBindingNoResolverOrInstance
 	}
 
 	instance, err := c.invoke(b.resolver)
@@ -56,12 +55,12 @@ func NewContainer() *Container {
 // It only works for functions that return a single value.
 func (c *Container) invoke(function any) (any, error) {
 	if function == nil {
-		return nil, errors.New("container: cannot invoke nil function")
+		return nil, errors.ErrCannotInvokeNilFunction
 	}
 
 	funcType := reflect.TypeOf(function)
 	if funcType == nil || funcType.Kind() != reflect.Func {
-		return nil, errors.New("container: resolver must be a function")
+		return nil, errors.ErrResolverMustBeFunction
 	}
 
 	args, err := c.arguments(function)
@@ -80,17 +79,17 @@ func (c *Container) invoke(function any) (any, error) {
 		if err, ok := values[1].Interface().(error); ok {
 			return values[0].Interface(), err
 		}
-		return values[0].Interface(), fmt.Errorf("container: second return value is not an error: %v", values[1].Interface())
+		return values[0].Interface(), errors.ErrSecondReturnNotError.WithMeta(values[1].Interface())
 	}
 
-	return nil, errors.New("container: resolver function signature is invalid")
+	return nil, errors.ErrInvalidResolverSignature
 }
 
 // arguments returns container-resolved arguments of a function.
 func (c *Container) arguments(function any) ([]reflect.Value, error) {
 	reflectedFunction := reflect.TypeOf(function)
 	if reflectedFunction == nil {
-		return nil, errors.New("container: cannot get arguments for nil function")
+		return nil, errors.ErrCannotGetArgumentsForNil
 	}
 
 	argumentsCount := reflectedFunction.NumIn()
@@ -110,11 +109,11 @@ func (c *Container) arguments(function any) ([]reflect.Value, error) {
 		if exists {
 			instance, err := concrete.resolve(c)
 			if err != nil {
-				return nil, fmt.Errorf("container: failed to resolve argument %d (%s): %w", i, abstraction.String(), err)
+				return nil, errors.ErrFailedToResolveArgument.WithError(err).WithMeta(map[string]any{"index": i, "type": abstraction.String()})
 			}
 			arguments[i] = reflect.ValueOf(instance)
 		} else {
-			return nil, errors.New("container: no concrete found for: " + abstraction.String())
+			return nil, errors.ErrNoConcreteFound.WithMeta(abstraction.String())
 		}
 	}
 
@@ -125,7 +124,7 @@ func (c *Container) arguments(function any) ([]reflect.Value, error) {
 func (c *Container) create(v reflect.Value, visited map[reflect.Type]bool) error {
 	t := v.Type()
 	if visited[t] {
-		return fmt.Errorf("container: circular dependency detected for type %s", t)
+		return errors.ErrCircularDependency.WithMeta(t.String())
 	}
 	visited[t] = true
 	defer delete(visited, t)
@@ -187,11 +186,11 @@ func (c *Container) create(v reflect.Value, visited map[reflect.Type]bool) error
 			if bindingExists && existingBinding.resolver != nil {
 				instance, err = c.invoke(existingBinding.resolver)
 				if err != nil {
-					return fmt.Errorf("container: failed to resolve field '%s' with pre-registered resolver: %w", sType.Field(i).Name, err)
+					return errors.ErrFailedToResolveField.WithError(err).WithMeta(sType.Field(i).Name)
 				}
 			} else {
 				if isInterface {
-					return fmt.Errorf("container: cannot create interface field '%s' of %s: no binding found", sType.Field(i).Name, sType.Name())
+					return errors.ErrCannotCreateInterfaceField.WithMeta(map[string]any{"field": sType.Field(i).Name, "type": sType.Name()})
 				}
 
 				// 2. Use a zero value of the struct for pointer to struct fields.
@@ -234,12 +233,12 @@ func (c *Container) create(v reflect.Value, visited map[reflect.Type]bool) error
 // Register maps an abstraction to a concrete and sets an instance if it's a singleton binding.
 func (c *Container) Register(resolver any, name string, singleton bool) error {
 	if resolver == nil {
-		return errors.New("container: resolver cannot be nil")
+		return errors.ErrResolverCannotBeNil
 	}
 
 	reflectedResolver := reflect.TypeOf(resolver)
 	if reflectedResolver == nil || reflectedResolver.Kind() != reflect.Func {
-		return errors.New("container: the resolver must be a function")
+		return errors.ErrInvalidResolver
 	}
 
 	for i := 0; i < reflectedResolver.NumOut(); i++ {
@@ -275,7 +274,7 @@ func (c *Container) Register(resolver any, name string, singleton bool) error {
 func (c *Container) Resolve(abstraction any, name string) error {
 	receiverType := reflect.TypeOf(abstraction)
 	if receiverType == nil {
-		return errors.New("container: invalid abstraction")
+		return errors.ErrInvalidAbstraction
 	}
 
 	if receiverType.Kind() == reflect.Ptr {
@@ -300,10 +299,10 @@ func (c *Container) Resolve(abstraction any, name string) error {
 			return nil
 		}
 
-		return errors.New("container: no concrete found for: " + elem.String())
+		return errors.ErrNoConcreteFound.WithMeta(elem.String())
 	}
 
-	return errors.New("container: invalid abstraction")
+	return errors.ErrInvalidAbstraction
 }
 
 // Call takes a function (receiver) with one or more arguments of the abstractions (interfaces).
@@ -311,7 +310,7 @@ func (c *Container) Resolve(abstraction any, name string) error {
 func (c *Container) Call(function any) error {
 	receiverType := reflect.TypeOf(function)
 	if receiverType == nil || receiverType.Kind() != reflect.Func {
-		return errors.New("container: invalid function")
+		return errors.ErrInvalidFunction
 	}
 
 	arguments, err := c.arguments(function)
@@ -328,7 +327,7 @@ func (c *Container) Call(function any) error {
 func (c *Container) Fill(structure any) error {
 	receiverType := reflect.TypeOf(structure)
 	if receiverType == nil {
-		return errors.New("container: invalid structure")
+		return errors.ErrInvalidStructure
 	}
 
 	if receiverType.Kind() == reflect.Ptr {
@@ -363,7 +362,7 @@ func (c *Container) Fill(structure any) error {
 					if exists {
 						instance, err := concrete.resolve(c)
 						if err != nil {
-							return fmt.Errorf("container: failed to resolve field '%s': %w", s.Type().Field(i).Name, err)
+							return errors.ErrFailedToResolveField.WithError(err).WithMeta(s.Type().Field(i).Name)
 						}
 
 						ptr := reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem()
@@ -372,7 +371,7 @@ func (c *Container) Fill(structure any) error {
 						continue
 					}
 
-					return fmt.Errorf("container: cannot resolve %v field", s.Type().Field(i).Name)
+					return errors.ErrCannotResolveField.WithMeta(s.Type().Field(i).Name)
 				}
 			}
 
@@ -380,14 +379,14 @@ func (c *Container) Fill(structure any) error {
 		}
 	}
 
-	return errors.New("container: invalid structure")
+	return errors.ErrInvalidStructure
 }
 
 // Create creates and registers a struct and its dependencies recursively.
 // It's purely singleton-based.
 func (c *Container) Create(value any) (any, error) {
 	if value == nil {
-		return nil, errors.New("container: Create's value cannot be nil")
+		return nil, errors.ErrCreateValueCannotBeNil
 	}
 
 	v := reflect.ValueOf(value)
@@ -428,7 +427,7 @@ func (c *Container) Create(value any) (any, error) {
 
 		ptrV = v
 	} else {
-		return nil, errors.New("container: Create's value must be a struct or a pointer to a struct")
+		return nil, errors.ErrInvalidAbstraction
 	}
 
 	visited := make(map[reflect.Type]bool)

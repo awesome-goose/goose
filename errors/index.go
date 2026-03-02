@@ -6,22 +6,24 @@ import (
 )
 
 type Error struct {
-	Code    string
-	Message string
-	Meta    any
-	Err     error
+	Code            string
+	Message         string
+	Detail          string
+	SuggestedAction string
+	Meta            any
+	Err             error
 }
 
-func New(code, message string) *Error {
-	return &Error{Code: code, Message: message}
+func New(code, message, detail, suggestedAction string) *Error {
+	return &Error{Code: code, Message: message, Detail: detail, SuggestedAction: suggestedAction}
 }
 
-func NewWithMeta(code, message string, meta any) *Error {
-	return &Error{Code: code, Message: message, Meta: meta}
+func NewWithMeta(code, message, detail, suggestedAction string, meta any) *Error {
+	return &Error{Code: code, Message: message, Detail: detail, SuggestedAction: suggestedAction, Meta: meta}
 }
 
-func Wrap(err error, code, message string) *Error {
-	return &Error{Code: code, Message: message, Err: err}
+func Wrap(err error, code, message, detail, suggestedAction string) *Error {
+	return &Error{Code: code, Message: message, Detail: detail, SuggestedAction: suggestedAction, Err: err}
 }
 
 func (e *Error) Error() string {
@@ -29,7 +31,13 @@ func (e *Error) Error() string {
 		return "<nil>"
 	}
 	if e.Err != nil {
+		if e.Detail != "" {
+			return fmt.Sprintf("%s: %s (%s): %v", e.Code, e.Message, e.Detail, e.Err)
+		}
 		return fmt.Sprintf("%s: %s: %v", e.Code, e.Message, e.Err)
+	}
+	if e.Detail != "" {
+		return fmt.Sprintf("%s: %s (%s)", e.Code, e.Message, e.Detail)
 	}
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
@@ -86,4 +94,28 @@ func (e *Error) GetMeta() any {
 		return nil
 	}
 	return e.Meta
+}
+
+func (e *Error) GetDetail() string {
+	if e == nil {
+		return ""
+	}
+	return e.Detail
+}
+
+func (e *Error) GetSuggestedAction() string {
+	if e == nil {
+		return ""
+	}
+	return e.SuggestedAction
+}
+
+func (e *Error) WithDetail(detail string) *Error {
+	e.Detail = detail
+	return e
+}
+
+func (e *Error) WithSuggestedAction(action string) *Error {
+	e.SuggestedAction = action
+	return e
 }

@@ -2,20 +2,7 @@ package queues
 
 import (
 	"context"
-	"errors"
 	"time"
-)
-
-// Common errors
-var (
-	ErrQueueNotFound  = errors.New("queue not found")
-	ErrJobNotFound    = errors.New("job not found")
-	ErrJobExpired     = errors.New("job expired")
-	ErrJobLocked      = errors.New("job locked by another worker")
-	ErrShuttingDown   = errors.New("queue service is shutting down")
-	ErrJobTimeout     = errors.New("job execution timed out")
-	ErrRetryExhausted = errors.New("retry limit exceeded")
-	ErrInvalidHandler = errors.New("invalid job handler")
 )
 
 // Queue status constants

@@ -2,11 +2,12 @@ package sql
 
 import (
 	"database/sql"
-	"errors"
+	stderrors "errors"
 	"fmt"
 	"reflect"
 	"time"
 
+	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/types"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -265,7 +266,7 @@ func (r *Entity[T]) Min(column string, query string, args ...any) (int64, error)
 		return 0, err
 	}
 	if !result.Valid {
-		return 0, ErrNotFound
+		return 0, errors.ErrRecordNotFound
 	}
 	return result.Int64, nil
 }
@@ -273,7 +274,7 @@ func (r *Entity[T]) Min(column string, query string, args ...any) (int64, error)
 // Max returns the maximum value of a column for entities matching the query
 func (r *Entity[T]) Max(column string, query string, args ...any) (int64, error) {
 	if !validIdentifier.MatchString(column) {
-		return 0, fmt.Errorf("invalid column name: %s", column)
+		return 0, errors.ErrInvalidColumnName.WithMeta(column)
 	}
 
 	entity := new(T)
@@ -298,7 +299,7 @@ func (r *Entity[T]) Max(column string, query string, args ...any) (int64, error)
 		return 0, err
 	}
 	if !result.Valid {
-		return 0, ErrNotFound
+		return 0, errors.ErrRecordNotFound
 	}
 	return result.Int64, nil
 }
@@ -475,8 +476,8 @@ func (r *Entity[T]) First(query string, args ...any) (*T, error) {
 
 	err := q.First(entity).Error
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrNotFound
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.ErrRecordNotFound
 		}
 		return nil, err
 	}
@@ -540,8 +541,8 @@ func (r *Entity[T]) Last(query string, args ...any) (*T, error) {
 
 	err := q.Last(entity).Error
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrNotFound
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.ErrRecordNotFound
 		}
 		return nil, err
 	}
@@ -677,7 +678,7 @@ func (r *Entity[T]) Delete(query string, args ...any) (int64, error) {
 		}
 
 		if err := fetchQuery.First(entity).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
+			if stderrors.Is(err, gorm.ErrRecordNotFound) {
 				return 0, nil
 			}
 			return 0, err

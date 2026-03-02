@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/awesome-goose/goose/errors"
 )
 
 // HTMLOutput represents an HTML response rendered from templates.
@@ -275,7 +277,7 @@ func (h *HTMLOutput) resolveTemplatePath(templatePath string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("template not found: %s (searched in %s and %s)", templatePath, h.baseDir, h.fallbackDir)
+	return "", errors.ErrTemplateNotFound.WithMeta(templatePath)
 }
 
 // loadPartialsFromDir loads all .html files from a partials directory
@@ -291,12 +293,12 @@ func (h *HTMLOutput) loadPartialsFromDir(tmpl *template.Template, partialsDir st
 			if !file.IsDir() && strings.HasSuffix(file.Name(), ".html") {
 				content, err := os.ReadFile(filepath.Join(primaryPath, file.Name()))
 				if err != nil {
-					return fmt.Errorf("error reading partial %s: %w", file.Name(), err)
+					return errors.ErrReadingPartial.WithMeta(file.Name()).WithError(err)
 				}
 				partialName := strings.TrimSuffix(file.Name(), ".html")
 				_, err = tmpl.New(partialName).Parse(string(content))
 				if err != nil {
-					return fmt.Errorf("error parsing partial %s: %w", file.Name(), err)
+					return errors.ErrParsingPartial.WithMeta(file.Name()).WithError(err)
 				}
 				loadedPartials[file.Name()] = true
 			}
@@ -310,12 +312,12 @@ func (h *HTMLOutput) loadPartialsFromDir(tmpl *template.Template, partialsDir st
 				if !file.IsDir() && strings.HasSuffix(file.Name(), ".html") && !loadedPartials[file.Name()] {
 					content, err := os.ReadFile(filepath.Join(fallbackPath, file.Name()))
 					if err != nil {
-						return fmt.Errorf("error reading partial %s: %w", file.Name(), err)
+						return errors.ErrReadingPartial.WithMeta(file.Name()).WithError(err)
 					}
 					partialName := strings.TrimSuffix(file.Name(), ".html")
 					_, err = tmpl.New(partialName).Parse(string(content))
 					if err != nil {
-						return fmt.Errorf("error parsing partial %s: %w", file.Name(), err)
+						return errors.ErrParsingPartial.WithMeta(file.Name()).WithError(err)
 					}
 				}
 			}

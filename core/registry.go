@@ -1,37 +1,12 @@
 package core
 
 import (
-	"errors"
-	"fmt"
 	"reflect"
 	"sync"
 	"unsafe"
 
+	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/types"
-)
-
-// ============================================================================
-// VALIDATION ERRORS
-// ============================================================================
-
-var (
-	// ErrCircularImport: Module A imports B which imports A (directly or indirectly)
-	ErrCircularImport = errors.New("registry: circular module import detected")
-
-	// ErrInvalidExport: Module exports something not in its Declarations
-	ErrInvalidExport = errors.New("registry: cannot export declaration not owned by module")
-
-	// ErrDuplicateDeclaration: Same type declared in multiple modules
-	ErrDuplicateDeclaration = errors.New("registry: declaration type already registered")
-
-	// ErrModuleNotFound: Attempting to resolve in an unregistered module
-	ErrModuleNotFound = errors.New("registry: module not found in registry")
-
-	// ErrDeclarationNotInScope: Field type not available in module's scope
-	ErrDeclarationNotInScope = errors.New("registry: declaration not available in module scope")
-
-	// ErrDeclarationNotFound: Get() couldn't find the type anywhere
-	ErrDeclarationNotFound = errors.New("registry: declaration not found in any module")
 )
 
 // ============================================================================
@@ -150,7 +125,7 @@ func (r *Registry) topologicalSort(root types.Module) ([]types.Module, error) {
 		modType := reflect.TypeOf(mod)
 
 		if inStack[modType] {
-			return ErrCircularImport
+			return errors.ErrCircularImport
 		}
 
 		if visited[modType] {
@@ -167,7 +142,7 @@ func (r *Registry) topologicalSort(root types.Module) ([]types.Module, error) {
 
 		mod, ok := modInstance.(types.Module)
 		if !ok {
-			return fmt.Errorf("registry: instance created from module is not a module")
+			return errors.ErrInstanceNotModule
 		}
 
 		// Visit all imports first (dependencies)
@@ -217,7 +192,7 @@ func (r *Registry) processModule(mod types.Module) error {
 	// that their declarations may need during injection
 	if configurable, ok := mod.(types.Configurable); ok {
 		if err := configurable.Configure(r.container); err != nil {
-			return fmt.Errorf("module %s Configure failed: %w", modType.String(), err)
+			return errors.ErrModuleConfigureFailed.WithError(err).WithMeta(modType.String())
 		}
 	}
 
@@ -228,7 +203,7 @@ func (r *Registry) processModule(mod types.Module) error {
 		// Check for duplicate declarations across modules
 		if existing, exists := r.declarationIndex[declType]; exists {
 			if reflect.TypeOf(existing.Module) != modType {
-				return ErrDuplicateDeclaration
+				return errors.ErrDuplicateDeclaration
 			}
 		}
 
@@ -261,7 +236,7 @@ func (r *Registry) processModule(mod types.Module) error {
 		exportSet[expType] = true
 
 		if _, found := rm.ownDeclarations[expType]; !found {
-			return ErrInvalidExport
+			return errors.ErrInvalidExport
 		}
 
 		rm.exports[expType] = rm.ownDeclarations[expType]
@@ -333,12 +308,12 @@ func (r *Registry) Resolve(target any, module types.Module) error {
 	modType := reflect.TypeOf(module)
 	rm, exists := r.moduleRegistry[modType]
 	if !exists {
-		return ErrModuleNotFound
+		return errors.ErrModuleNotFound
 	}
 
 	v := reflect.ValueOf(target)
 	if v.Kind() != reflect.Ptr || v.Elem().Kind() != reflect.Struct {
-		return errors.New("registry: target must be a pointer to struct")
+		return errors.ErrInvalidStructure
 	}
 
 	s := v.Elem()
@@ -366,7 +341,7 @@ func (r *Registry) Resolve(target any, module types.Module) error {
 			}
 
 			if !found {
-				return ErrDeclarationNotInScope
+				return errors.ErrDeclarationNotInScope
 			}
 
 			// Set the field value
@@ -396,7 +371,7 @@ func (r *Registry) Get(declarationType any) (*types.DeclarationInfo, error) {
 		return info, nil
 	}
 
-	return nil, ErrDeclarationNotFound
+	return nil, errors.ErrDeclarationNotFound
 }
 
 // ============================================================================
@@ -413,7 +388,7 @@ func (r *Registry) GetModule(module types.Module) (*resolvedModule, error) {
 		return rm, nil
 	}
 
-	return nil, ErrModuleNotFound
+	return nil, errors.ErrModuleNotFound
 }
 
 // IsAvailable checks if a declaration type is available within a module's scope.
@@ -462,7 +437,7 @@ func (r *Registry) ListDeclarations(module types.Module) ([]*types.DeclarationIn
 	modType := reflect.TypeOf(module)
 	rm, exists := r.moduleRegistry[modType]
 	if !exists {
-		return nil, ErrModuleNotFound
+		return nil, errors.ErrModuleNotFound
 	}
 
 	declarations := make([]*types.DeclarationInfo, 0, len(rm.availableDeclarations))

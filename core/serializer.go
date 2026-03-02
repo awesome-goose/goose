@@ -60,11 +60,11 @@ func (s *serializer) walk(value any) (types.SerialType, []byte, error) {
 	case reflect.Struct, reflect.Map, reflect.Slice, reflect.Array:
 		b, err := json.Marshal(value)
 		if err != nil {
-			return types.SerialTypeNil, nil, errors.JSONMARSHALFAILED.WithError(err)
+			return types.SerialTypeNil, nil, errors.ErrJSONMarshalFailed.WithError(err)
 		}
 		return types.SerialTypeObject, b, nil
 
 	default:
-		return types.SerialTypeNil, nil, errors.UNSUPPORTEDTYPE.WithMeta(rv.Kind())
+		return types.SerialTypeNil, nil, errors.ErrUnsupportedType.WithMeta(rv.Kind())
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/modules/sql"
 	"github.com/awesome-goose/goose/types"
 	"gorm.io/gorm"
@@ -78,7 +79,7 @@ func handlerKey(group, name string) string {
 func (c *Cron) Register(group string, name string, pattern string, config *CronConfig) (*CronJob, error) {
 	// Validate cron pattern
 	if !IsValidCronPattern(pattern) {
-		return nil, ErrInvalidPattern
+		return nil, errors.ErrCronInvalidPattern
 	}
 
 	now := time.Now().UTC()
@@ -217,7 +218,7 @@ func (c *Cron) Log(jobId string, status string, output any) (*CronLog, error) {
 	var job CronJob
 	err := c.db.DB.Where("id = ?", jobId).First(&job).Error
 	if err != nil {
-		return nil, ErrJobNotFound
+		return nil, errors.ErrCronJobNotFound
 	}
 
 	// Marshal output
@@ -453,7 +454,7 @@ func (c *Cron) executeJobWithTimeout(handler *CronHandler, job *CronJob) (any, e
 
 	select {
 	case <-ctx.Done():
-		return nil, ErrJobTimeout
+		return nil, errors.ErrCronJobTimeout
 	case res := <-resultChan:
 		return res.result, res.err
 	}
@@ -485,7 +486,7 @@ func (c *Cron) GetJob(group, name string) (*CronJob, error) {
 	err := c.db.DB.Where(`"group" = ? AND name = ?`, group, name).First(&job).Error
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return nil, ErrJobNotFound
+			return nil, errors.ErrCronJobNotFound
 		}
 		return nil, err
 	}
@@ -561,7 +562,7 @@ func (c *Cron) UpdateJobConfig(group, name string, config *CronConfig) error {
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
-		return ErrJobNotFound
+		return errors.ErrCronJobNotFound
 	}
 
 	return nil
@@ -581,7 +582,7 @@ func (c *Cron) DisableJob(group, name string) error {
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
-		return ErrJobNotFound
+		return errors.ErrCronJobNotFound
 	}
 
 	return nil
@@ -602,7 +603,7 @@ func (c *Cron) EnableJob(group, name string) error {
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
-		return ErrJobNotFound
+		return errors.ErrCronJobNotFound
 	}
 
 	return nil
