@@ -1,8 +1,9 @@
+//go:build !windows
+
 package processors
 
 import (
 	"log/syslog"
-	"runtime"
 	"strings"
 	"syscall"
 
@@ -14,10 +15,6 @@ type Syslog struct {
 }
 
 func NewSyslog(tag string) (*Syslog, error) {
-	// 1. OS compatibility check
-	if runtime.GOOS == "windows" {
-		return nil, errors.ErrSyslogNotSupported
-	}
 
 	// 2. Permissions check: try writing a test line
 	writer, err := syslog.New(syslog.LOG_INFO|syslog.LOG_USER, tag)
