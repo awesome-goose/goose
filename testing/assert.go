@@ -21,6 +21,11 @@ func New(t *testing.T) *T {
 	return &T{t: t}
 }
 
+// T returns the underlying *testing.T
+func (t *T) T() *testing.T {
+	return t.t
+}
+
 // Expect starts an assertion chain
 func (t *T) Expect(actual any) *Assertion {
 	t.t.Helper()

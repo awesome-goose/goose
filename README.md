@@ -372,6 +372,124 @@ utils.Path.Join("a", "b", "c")       // "a/b/c"
 
 ---
 
+## Testing
+
+Goose includes a comprehensive testing package with fluent assertions, mocks, and suite runners.
+
+### Running Tests
+
+```bash
+# Run all tests
+go test ./tests/...
+
+# Run with verbose output
+go test ./tests/... -v
+
+# Run a specific test file
+go test ./tests/... -run TestRouter
+
+# Run a specific test case
+go test ./tests/... -run TestRouter/TestFind_SimpleRouteMatch
+```
+
+### Code Coverage
+
+```bash
+# Coverage for all goose packages
+go test ./tests/... -coverprofile=coverage.out -coverpkg=./...
+
+# Coverage for specific packages
+go test ./tests/... -coverprofile=coverage.out -coverpkg=./config,./core,./env,./errors,./utils/...
+```
+
+### Writing Tests
+
+Use the built-in testing utilities:
+
+```go
+package tests
+
+import (
+    "testing"
+    test "github.com/awesome-goose/goose/testing"
+)
+
+func TestMyFeature(t *testing.T) {
+    test.NewSuiteRunner(t, &MySuite{}).Run()
+}
+
+type MySuite struct {
+    test.Suite
+}
+
+func (s *MySuite) SetupTest() {
+    // Runs before each test
+}
+
+func (s *MySuite) TeardownTest() {
+    // Runs after each test
+}
+
+func (s *MySuite) TestSomething() {
+    s.T.Expect("hello").ToEqual("hello")
+    s.T.Expect(42).Not().ToEqual(0)
+    s.T.Expect([]int{1, 2, 3}).ToHaveLength(3)
+    s.T.Expect(err).ToBeNil()
+}
+```
+
+### Available Assertions
+
+```go
+// Equality
+s.T.Expect(actual).ToEqual(expected)
+s.T.Expect(actual).Not().ToEqual(unexpected)
+
+// Nil checks
+s.T.Expect(value).ToBeNil()
+s.T.Expect(value).Not().ToBeNil()
+
+// Boolean
+s.T.Expect(condition).ToBeTrue()
+s.T.Expect(condition).ToBeFalse()
+
+// Length
+s.T.Expect(slice).ToHaveLength(3)
+s.T.Expect(slice).ToBeEmpty()
+
+// Contains
+s.T.Expect("hello world").ToContain("world")
+s.T.Expect(slice).ToContain(element)
+```
+
+### Mocking
+
+```go
+type MockUserService struct {
+    mock *test.Mock
+}
+
+func (m *MockUserService) GetUser(id int) string {
+    args := m.mock.Called("GetUser", id)
+    if args != nil && len(args) > 0 {
+        return args[0].(string)
+    }
+    return ""
+}
+
+func (s *MySuite) TestWithMock() {
+    mock := &MockUserService{mock: test.NewMock(s.T.T())}
+    mock.mock.On("GetUser", "John")
+
+    result := mock.GetUser(1)
+
+    s.T.Expect(result).ToEqual("John")
+    s.T.Expect(mock.mock.WasCalled("GetUser")).ToBeTrue()
+}
+```
+
+---
+
 ## License
 
 MIT License - see LICENSE file for details.
