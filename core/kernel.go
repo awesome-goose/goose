@@ -340,12 +340,29 @@ func (k *kernel) AppendRoutes(routes ...types.Route) ([]types.Route, error) {
 			return k.routes, errors.ErrInvalidRoute.WithMeta(map[string]any{"method": newRoute.Method, "path": newRoute.Path})
 		}
 
-		for _, existingRoute := range k.routes {
-			if existingRoute.Equals(&newRoute) {
-				return k.routes, errors.ErrDuplicateRoute.WithMeta(map[string]any{"method": newRoute.Method, "path": newRoute.Path})
+		merged := false
+		for i := range k.routes {
+			existing := &k.routes[i]
+			if !existing.Equals(&newRoute) {
+				continue
 			}
+
+			// Two pure groups (no handler on either side) at the same
+			// Method+Path are not a conflict — merge their children so a
+			// router.Mount(prefix, ...) wrapping multiple staticRouters can
+			// land all of them under a single shared prefix route.
+			if existing.Handler == nil && newRoute.Handler == nil {
+				existing.Children = append(existing.Children, newRoute.Children...)
+				merged = true
+				break
+			}
+
+			return k.routes, errors.ErrDuplicateRoute.WithMeta(map[string]any{"method": newRoute.Method, "path": newRoute.Path})
 		}
-		k.routes = append(k.routes, newRoute)
+
+		if !merged {
+			k.routes = append(k.routes, newRoute)
+		}
 	}
 	return k.routes, nil
 }

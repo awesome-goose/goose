@@ -45,8 +45,11 @@ type resolvedModule struct {
 type Registry struct {
 	container *Container
 
-	// moduleRegistry maps each module to its resolved metadata
-	moduleRegistry map[reflect.Type]*resolvedModule
+	// moduleRegistry maps each module instance to its resolved metadata.
+	// Keying by instance (rather than reflect.Type) lets composable wrappers
+	// — e.g. multiple router.Mount() wrappers around different inner
+	// modules — coexist in the same tree without being conflated.
+	moduleRegistry map[types.Module]*resolvedModule
 
 	// globalDeclarations holds all globally available declarations
 	globalDeclarations map[reflect.Type]*types.DeclarationInfo
@@ -65,7 +68,7 @@ type Registry struct {
 func NewRegistry(container *Container) *Registry {
 	return &Registry{
 		container:          container,
-		moduleRegistry:     make(map[reflect.Type]*resolvedModule),
+		moduleRegistry:     make(map[types.Module]*resolvedModule),
 		globalDeclarations: make(map[reflect.Type]*types.DeclarationInfo),
 		declarationIndex:   make(map[reflect.Type]*types.DeclarationInfo),
 	}
@@ -115,25 +118,28 @@ func (r *Registry) Hydrate(rootModule types.Module) error {
 }
 
 // topologicalSort performs a topological sort of the module graph with cycle detection.
+//
+// Visited / in-stack tracking is keyed by module *instance* (not reflect.Type)
+// so that two distinct instances of the same module type — e.g. two
+// router.Mount(...) wrappers around different inner modules — are treated as
+// independent nodes and do not falsely trip the cycle detector.
 func (r *Registry) topologicalSort(root types.Module) ([]types.Module, error) {
 	var result []types.Module
-	visited := make(map[reflect.Type]bool)
-	inStack := make(map[reflect.Type]bool)
+	visited := make(map[types.Module]bool)
+	inStack := make(map[types.Module]bool)
 
 	var visit func(mod types.Module) error
 	visit = func(mod types.Module) error {
-		modType := reflect.TypeOf(mod)
-
-		if inStack[modType] {
+		if inStack[mod] {
 			return errors.ErrCircularImport
 		}
 
-		if visited[modType] {
+		if visited[mod] {
 			return nil
 		}
 
-		inStack[modType] = true
-		visited[modType] = true
+		inStack[mod] = true
+		visited[mod] = true
 
 		modInstance, err := r.container.Create(mod)
 		if err != nil {
@@ -152,7 +158,7 @@ func (r *Registry) topologicalSort(root types.Module) ([]types.Module, error) {
 			}
 		}
 
-		inStack[modType] = false
+		inStack[mod] = false
 		result = append(result, mod)
 		return nil
 	}
@@ -196,15 +202,25 @@ func (r *Registry) processModule(mod types.Module) error {
 		}
 	}
 
-	// Register declarations
+	// Register declarations.
+	//
+	// If a declaration of the same type is already registered (by any other
+	// module), we treat the first registration as canonical and have the
+	// current module share that existing instance. This matches the
+	// "shared infrastructure" semantics needed for compositional designs:
+	// a host can import shared services (e.g. events.Bus) once at the top
+	// level and the same singleton is reused by every imported subtree,
+	// including those wrapped by router.Mount.
 	for _, decl := range mod.Declarations() {
 		declType := r.getDeclarationType(decl)
 
-		// Check for duplicate declarations across modules
 		if existing, exists := r.declarationIndex[declType]; exists {
-			if reflect.TypeOf(existing.Module) != modType {
-				return errors.ErrDuplicateDeclaration
+			// Share the existing instance; do not create a duplicate.
+			rm.ownDeclarations[declType] = existing
+			if isGlobal {
+				r.globalDeclarations[declType] = existing
 			}
+			continue
 		}
 
 		// Create instance via container
@@ -244,8 +260,7 @@ func (r *Registry) processModule(mod types.Module) error {
 
 	// Collect imported declarations from imported modules' exports
 	for _, imp := range mod.Imports() {
-		impType := reflect.TypeOf(imp)
-		if importedMod, exists := r.moduleRegistry[impType]; exists {
+		if importedMod, exists := r.moduleRegistry[imp]; exists {
 			for expType, expInfo := range importedMod.exports {
 				rm.importedDeclarations[expType] = expInfo
 			}
@@ -258,7 +273,7 @@ func (r *Registry) processModule(mod types.Module) error {
 		}
 	}
 
-	r.moduleRegistry[modType] = rm
+	r.moduleRegistry[mod] = rm
 	return nil
 }
 
@@ -305,8 +320,7 @@ func (r *Registry) Resolve(target any, module types.Module) error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	modType := reflect.TypeOf(module)
-	rm, exists := r.moduleRegistry[modType]
+	rm, exists := r.moduleRegistry[module]
 	if !exists {
 		return errors.ErrModuleNotFound
 	}
@@ -378,13 +392,12 @@ func (r *Registry) Get(declarationType any) (*types.DeclarationInfo, error) {
 // ADDITIONAL METHODS
 // ============================================================================
 
-// GetModule returns the resolved module info for a given module type.
+// GetModule returns the resolved module info for a given module instance.
 func (r *Registry) GetModule(module types.Module) (*resolvedModule, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	modType := reflect.TypeOf(module)
-	if rm, exists := r.moduleRegistry[modType]; exists {
+	if rm, exists := r.moduleRegistry[module]; exists {
 		return rm, nil
 	}
 
@@ -396,8 +409,7 @@ func (r *Registry) IsAvailable(declarationType any, module types.Module) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	modType := reflect.TypeOf(module)
-	rm, exists := r.moduleRegistry[modType]
+	rm, exists := r.moduleRegistry[module]
 	if !exists {
 		return false
 	}
@@ -434,8 +446,7 @@ func (r *Registry) ListDeclarations(module types.Module) ([]*types.DeclarationIn
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	modType := reflect.TypeOf(module)
-	rm, exists := r.moduleRegistry[modType]
+	rm, exists := r.moduleRegistry[module]
 	if !exists {
 		return nil, errors.ErrModuleNotFound
 	}
