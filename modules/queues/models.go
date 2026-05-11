@@ -22,7 +22,7 @@ type QueueQueue struct {
 
 // TableName returns the table name for QueueQueue
 func (QueueQueue) TableName() string {
-	return "queue_queues"
+	return "QueueQueues"
 }
 
 // BeforeCreate hook to set defaults
@@ -74,7 +74,7 @@ type QueueJob struct {
 
 // TableName returns the table name for QueueJob
 func (QueueJob) TableName() string {
-	return "queue_jobs"
+	return "QueueJobs"
 }
 
 // BeforeCreate hook to set defaults
@@ -118,7 +118,7 @@ type QueueLog struct {
 
 // TableName returns the table name for QueueLog
 func (QueueLog) TableName() string {
-	return "queue_logs"
+	return "QueueLogs"
 }
 
 // BeforeCreate hook to set defaults

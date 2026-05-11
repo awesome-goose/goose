@@ -30,7 +30,7 @@ type CronJob struct {
 
 // TableName returns the table name for CronJob
 func (CronJob) TableName() string {
-	return "cron_jobs"
+	return "CronJobs"
 }
 
 // BeforeCreate hook to set defaults
@@ -90,7 +90,7 @@ type CronLog struct {
 
 // TableName returns the table name for CronLog
 func (CronLog) TableName() string {
-	return "cron_logs"
+	return "CronLogs"
 }
 
 // BeforeCreate hook to set defaults

@@ -408,8 +408,8 @@ func (q *Queue) Pop(queueName string, jobName string) (*QueueJob, error) {
 		// Query for available job with row locking
 		// Uses FOR UPDATE SKIP LOCKED to avoid blocking on locked rows
 		result := tx.Raw(`
-			SELECT j.* FROM queue_jobs j
-			JOIN queue_queues q ON q.id = j.queue_id
+			SELECT j.* FROM "QueueJobs" j
+			JOIN "QueueQueues" q ON q.id = j.queue_id
 			WHERE q.name = ?
 				AND j.name = ?
 				AND j.status = ?

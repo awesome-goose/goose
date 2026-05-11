@@ -4,16 +4,16 @@ import (
 	"github.com/awesome-goose/goose/modules/sql"
 )
 
-// CreateQueueTables creates the queue_queues, queue_jobs, and queue_logs tables
+// CreateQueueTables creates the QueueQueues, QueueJobs, and QueueLogs tables
 type CreateQueueTables struct {
 	sql.BaseMigration
 }
 
 // Run executes the migration to create all queue tables
 func (m *CreateQueueTables) Run(q *sql.Query) error {
-	// Create queue_queues table
+	// Create QueueQueues table
 	_, err := q.Exec(`
-		CREATE TABLE IF NOT EXISTS queue_queues (
+		CREATE TABLE IF NOT EXISTS "QueueQueues" (
 			id UUID PRIMARY KEY NOT NULL,
 			created_at TIMESTAMP(6),
 			updated_at TIMESTAMP(6),
@@ -23,20 +23,20 @@ func (m *CreateQueueTables) Run(q *sql.Query) error {
 			config JSONB,
 			status VARCHAR(255) DEFAULT 'active'
 		);
-		
-		CREATE INDEX IF NOT EXISTS idx_queue_queues_created_at ON queue_queues(created_at);
-		CREATE INDEX IF NOT EXISTS idx_queue_queues_updated_at ON queue_queues(updated_at);
-		CREATE INDEX IF NOT EXISTS idx_queue_queues_deleted_at ON queue_queues(deleted_at);
-		CREATE INDEX IF NOT EXISTS idx_queue_queues_status ON queue_queues(status);
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_name ON queue_queues(name);
+
+		CREATE INDEX IF NOT EXISTS idx_queue_queues_created_at ON "QueueQueues"(created_at);
+		CREATE INDEX IF NOT EXISTS idx_queue_queues_updated_at ON "QueueQueues"(updated_at);
+		CREATE INDEX IF NOT EXISTS idx_queue_queues_deleted_at ON "QueueQueues"(deleted_at);
+		CREATE INDEX IF NOT EXISTS idx_queue_queues_status ON "QueueQueues"(status);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_name ON "QueueQueues"(name);
 	`)
 	if err != nil {
 		return err
 	}
 
-	// Create queue_jobs table
+	// Create QueueJobs table
 	_, err = q.Exec(`
-		CREATE TABLE IF NOT EXISTS queue_jobs (
+		CREATE TABLE IF NOT EXISTS "QueueJobs" (
 			id UUID PRIMARY KEY NOT NULL,
 			created_at TIMESTAMP(6),
 			updated_at TIMESTAMP(6),
@@ -55,24 +55,24 @@ func (m *CreateQueueTables) Run(q *sql.Query) error {
 			expired_at TIMESTAMP(6),
 			status VARCHAR(255) DEFAULT 'new'
 		);
-		
-		CREATE INDEX IF NOT EXISTS idx_queue_jobs_created_at ON queue_jobs(created_at);
-		CREATE INDEX IF NOT EXISTS idx_queue_jobs_updated_at ON queue_jobs(updated_at);
-		CREATE INDEX IF NOT EXISTS idx_queue_jobs_deleted_at ON queue_jobs(deleted_at);
-		CREATE INDEX IF NOT EXISTS idx_queue_jobs_queue_id ON queue_jobs(queue_id);
-		CREATE INDEX IF NOT EXISTS idx_queue_jobs_name ON queue_jobs(name);
-		CREATE INDEX IF NOT EXISTS idx_queue_jobs_priority ON queue_jobs(priority);
-		CREATE INDEX IF NOT EXISTS idx_queue_jobs_start_at ON queue_jobs(start_at);
-		CREATE INDEX IF NOT EXISTS idx_queue_jobs_expire_at ON queue_jobs(expire_at);
-		CREATE INDEX IF NOT EXISTS idx_queue_jobs_status ON queue_jobs(status);
+
+		CREATE INDEX IF NOT EXISTS idx_queue_jobs_created_at ON "QueueJobs"(created_at);
+		CREATE INDEX IF NOT EXISTS idx_queue_jobs_updated_at ON "QueueJobs"(updated_at);
+		CREATE INDEX IF NOT EXISTS idx_queue_jobs_deleted_at ON "QueueJobs"(deleted_at);
+		CREATE INDEX IF NOT EXISTS idx_queue_jobs_queue_id ON "QueueJobs"(queue_id);
+		CREATE INDEX IF NOT EXISTS idx_queue_jobs_name ON "QueueJobs"(name);
+		CREATE INDEX IF NOT EXISTS idx_queue_jobs_priority ON "QueueJobs"(priority);
+		CREATE INDEX IF NOT EXISTS idx_queue_jobs_start_at ON "QueueJobs"(start_at);
+		CREATE INDEX IF NOT EXISTS idx_queue_jobs_expire_at ON "QueueJobs"(expire_at);
+		CREATE INDEX IF NOT EXISTS idx_queue_jobs_status ON "QueueJobs"(status);
 	`)
 	if err != nil {
 		return err
 	}
 
-	// Create queue_logs table
+	// Create QueueLogs table
 	_, err = q.Exec(`
-		CREATE TABLE IF NOT EXISTS queue_logs (
+		CREATE TABLE IF NOT EXISTS "QueueLogs" (
 			id UUID PRIMARY KEY NOT NULL,
 			created_at TIMESTAMP(6),
 			updated_at TIMESTAMP(6),
@@ -82,12 +82,12 @@ func (m *CreateQueueTables) Run(q *sql.Query) error {
 			output JSONB,
 			status VARCHAR(255)
 		);
-		
-		CREATE INDEX IF NOT EXISTS idx_queue_logs_created_at ON queue_logs(created_at);
-		CREATE INDEX IF NOT EXISTS idx_queue_logs_updated_at ON queue_logs(updated_at);
-		CREATE INDEX IF NOT EXISTS idx_queue_logs_deleted_at ON queue_logs(deleted_at);
-		CREATE INDEX IF NOT EXISTS idx_queue_logs_job_id ON queue_logs(job_id);
-		CREATE INDEX IF NOT EXISTS idx_queue_logs_status ON queue_logs(status);
+
+		CREATE INDEX IF NOT EXISTS idx_queue_logs_created_at ON "QueueLogs"(created_at);
+		CREATE INDEX IF NOT EXISTS idx_queue_logs_updated_at ON "QueueLogs"(updated_at);
+		CREATE INDEX IF NOT EXISTS idx_queue_logs_deleted_at ON "QueueLogs"(deleted_at);
+		CREATE INDEX IF NOT EXISTS idx_queue_logs_job_id ON "QueueLogs"(job_id);
+		CREATE INDEX IF NOT EXISTS idx_queue_logs_status ON "QueueLogs"(status);
 	`)
 
 	return err

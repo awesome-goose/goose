@@ -147,7 +147,7 @@ type MigrationRecord struct {
 
 // TableName returns the table name for MigrationRecord
 func (MigrationRecord) TableName() string {
-	return "migrations"
+	return "Migrations"
 }
 
 var matchFirstCap = regexp.MustCompile("(.)([A-Z][a-z]+)")

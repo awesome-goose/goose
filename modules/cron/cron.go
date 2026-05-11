@@ -157,7 +157,7 @@ func (c *Cron) Select(group string, name string) (*CronJob, error) {
 	err := c.db.DB.Transaction(func(tx *gorm.DB) error {
 		// Use raw query for FOR UPDATE SKIP LOCKED
 		result := tx.Raw(`
-			SELECT * FROM cron_jobs j
+			SELECT * FROM "CronJobs" j
 			WHERE j."group" = ?
 			  AND j.name = ?
 			  AND j.status = ?
