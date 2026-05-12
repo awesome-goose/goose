@@ -121,6 +121,10 @@ func (c *Container) arguments(function any) ([]reflect.Value, error) {
 }
 
 // create is the recursive helper for Create.
+//
+// Not safe for concurrent invocation on the same struct: it sets fields via
+// unsafe pointers between mutex sections, which is fine for a single
+// initializer per struct but races if two goroutines populate the same value.
 func (c *Container) create(v reflect.Value, visited map[reflect.Type]bool) error {
 	t := v.Type()
 	if visited[t] {
@@ -384,6 +388,12 @@ func (c *Container) Fill(structure any) error {
 
 // Create creates and registers a struct and its dependencies recursively.
 // It's purely singleton-based.
+//
+// Not safe for concurrent use on the same struct. Container population is a
+// one-shot boot-time operation; callers must serialize Register/Create/Fill
+// calls. The internal recursive helper writes resolved fields via unsafe
+// pointers under the assumption that no other goroutine is touching the same
+// struct concurrently.
 func (c *Container) Create(value any) (any, error) {
 	if value == nil {
 		return nil, errors.ErrCreateValueCannotBeNil

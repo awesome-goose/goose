@@ -10,7 +10,13 @@ import (
 	"strings"
 
 	"github.com/awesome-goose/goose/errors"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
+
+var titleCaser = cases.Title(language.English)
+
+func titleCase(s string) string { return titleCaser.String(s) }
 
 // HTMLOutput represents an HTML response rendered from templates.
 // Supports layouts, partials, and data binding.
@@ -150,7 +156,7 @@ func defaultTemplateFuncs() template.FuncMap {
 		// String helpers
 		"upper":      strings.ToUpper,
 		"lower":      strings.ToLower,
-		"title":      strings.Title,
+		"title":      titleCase,
 		"trim":       strings.TrimSpace,
 		"contains":   strings.Contains,
 		"replace":    strings.ReplaceAll,

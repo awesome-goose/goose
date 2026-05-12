@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/awesome-goose/goose/errors"
@@ -27,7 +28,7 @@ type Queue struct {
 	mu             sync.Mutex
 	activeWorkers  map[string]int                  // key: "queue:job"
 	workers        map[string][]context.CancelFunc // key: "queue:job"
-	isShuttingDown bool
+	isShuttingDown atomic.Bool
 	wg             sync.WaitGroup
 
 	// Metrics
@@ -401,24 +402,31 @@ func (q *Queue) Pop(queueName string, jobName string) (*QueueJob, error) {
 	var poppedJob *QueueJob
 	now := time.Now().UTC()
 
-	// Use transaction with row-level locking
+	// Use transaction with row-level locking. SKIP LOCKED is only supported
+	// on Postgres/MySQL; SQLite serializes write transactions so the hint is
+	// neither needed nor accepted. NOW() is replaced with a bound parameter
+	// for cross-dialect portability.
+	dialect := q.db.DB.Dialector.Name()
+	lockHint := " FOR UPDATE SKIP LOCKED"
+	if dialect == "sqlite" {
+		lockHint = ""
+	}
+
 	err = q.db.DB.Transaction(func(tx *gorm.DB) error {
 		var job QueueJob
 
 		// Query for available job with row locking
-		// Uses FOR UPDATE SKIP LOCKED to avoid blocking on locked rows
 		result := tx.Raw(`
 			SELECT j.* FROM "QueueJobs" j
 			JOIN "QueueQueues" q ON q.id = j.queue_id
 			WHERE q.name = ?
 				AND j.name = ?
 				AND j.status = ?
-				AND (j.start_at IS NULL OR j.start_at <= NOW())
-				AND (j.expire_at IS NULL OR j.expire_at > NOW())
+				AND (j.start_at IS NULL OR j.start_at <= ?)
+				AND (j.expire_at IS NULL OR j.expire_at > ?)
 			ORDER BY j.priority DESC, j.created_at ASC
-			LIMIT 1
-			FOR UPDATE SKIP LOCKED
-		`, queueName, jobName, JobStatusNew).Scan(&job)
+			LIMIT 1`+lockHint,
+			queueName, jobName, JobStatusNew, now, now).Scan(&job)
 
 		if result.Error != nil {
 			return result.Error
@@ -750,7 +758,7 @@ func (q *Queue) Process(handler *JobHandler) {
 // spawnWorker creates a new worker goroutine
 func (q *Queue) spawnWorker(key, queueName, jobName string, fn JobHandlerFn, min, pollMs, idleThreshold, timeoutMs int, useExpBackoff bool) {
 	q.mu.Lock()
-	if q.isShuttingDown {
+	if q.isShuttingDown.Load() {
 		q.mu.Unlock()
 		return
 	}
@@ -785,7 +793,7 @@ func (q *Queue) spawnWorker(key, queueName, jobName string, fn JobHandlerFn, min
 			default:
 			}
 
-			if q.isShuttingDown {
+			if q.isShuttingDown.Load() {
 				return
 			}
 
@@ -958,7 +966,7 @@ func (q *Queue) autoScaler(key, queueName, jobName string, fn JobHandlerFn, min,
 	defer ticker.Stop()
 
 	for range ticker.C {
-		if q.isShuttingDown {
+		if q.isShuttingDown.Load() {
 			return
 		}
 
@@ -966,7 +974,9 @@ func (q *Queue) autoScaler(key, queueName, jobName string, fn JobHandlerFn, min,
 		currentWorkers := q.activeWorkers[key]
 		q.mu.Unlock()
 
-		// Scale up if we have room
+		// Scale up if we have room. spawnWorker re-checks isShuttingDown
+		// under the queue mutex so a concurrent Shutdown doesn't get a
+		// straggler worker between this check and the spawn.
 		if currentWorkers < max {
 			q.spawnWorker(key, queueName, jobName, fn, min, pollMs, idleThreshold, timeoutMs, useExpBackoff)
 		}
@@ -977,7 +987,7 @@ func (q *Queue) autoScaler(key, queueName, jobName string, fn JobHandlerFn, min,
 // Waits for all workers to finish processing their current jobs
 func (q *Queue) Shutdown() {
 	q.mu.Lock()
-	q.isShuttingDown = true
+	q.isShuttingDown.Store(true)
 
 	// Cancel all worker contexts
 	for _, cancels := range q.workers {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/awesome-goose/goose/errors"
@@ -23,8 +24,8 @@ type Cron struct {
 
 	// Runner management
 	mu             sync.Mutex
-	isRunning      bool
-	isShuttingDown bool
+	isRunning      atomic.Bool
+	isShuttingDown atomic.Bool
 	stopChan       chan struct{}
 	wg             sync.WaitGroup
 
@@ -154,20 +155,28 @@ func (c *Cron) Register(group string, name string, pattern string, config *CronC
 func (c *Cron) Select(group string, name string) (*CronJob, error) {
 	var job *CronJob
 
+	// SKIP LOCKED is only supported on Postgres/MySQL; SQLite serializes
+	// write transactions and rejects the hint. NOW() is replaced with a
+	// bound parameter for cross-dialect portability.
+	dialect := c.db.DB.Dialector.Name()
+	lockHint := " FOR UPDATE SKIP LOCKED"
+	if dialect == "sqlite" {
+		lockHint = ""
+	}
+	now := time.Now().UTC()
+
 	err := c.db.DB.Transaction(func(tx *gorm.DB) error {
-		// Use raw query for FOR UPDATE SKIP LOCKED
 		result := tx.Raw(`
 			SELECT * FROM "CronJobs" j
 			WHERE j."group" = ?
 			  AND j.name = ?
 			  AND j.status = ?
 			  AND j.deleted_at IS NULL
-			  AND (j.start_at IS NULL OR j.start_at <= NOW())
-			  AND (j.expire_at IS NULL OR j.expire_at > NOW())
+			  AND (j.start_at IS NULL OR j.start_at <= ?)
+			  AND (j.expire_at IS NULL OR j.expire_at > ?)
 			ORDER BY j.priority DESC, j.created_at ASC
-			LIMIT 1
-			FOR UPDATE SKIP LOCKED
-		`, group, name, JobStatusPending).Scan(&job)
+			LIMIT 1`+lockHint,
+			group, name, JobStatusPending, now, now).Scan(&job)
 
 		if result.Error != nil {
 			return result.Error
@@ -259,12 +268,12 @@ func (c *Cron) Log(jobId string, status string, output any) (*CronLog, error) {
 // This method blocks until Stop is called or the context is cancelled.
 func (c *Cron) Start(ctx context.Context, handlers []*CronHandler) error {
 	c.mu.Lock()
-	if c.isRunning {
+	if c.isRunning.Load() {
 		c.mu.Unlock()
 		return nil // Already running
 	}
-	c.isRunning = true
-	c.isShuttingDown = false
+	c.isRunning.Store(true)
+	c.isShuttingDown.Store(false)
 	c.stopChan = make(chan struct{})
 	c.handlers = make(map[string]*CronHandler)
 	c.metrics = &CronMetrics{}
@@ -277,7 +286,9 @@ func (c *Cron) Start(ctx context.Context, handlers []*CronHandler) error {
 			c.log.Warning(fmt.Sprintf("Failed to register cron job %s/%s: %v", h.Group, h.Name, err))
 			continue
 		}
+		c.mu.Lock()
 		c.handlers[handlerKey(h.Group, h.Name)] = h
+		c.mu.Unlock()
 	}
 
 	// Get tick interval
@@ -318,32 +329,47 @@ func (c *Cron) Start(ctx context.Context, handlers []*CronHandler) error {
 // Stop stops the cron runner gracefully
 func (c *Cron) Stop() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if !c.isRunning {
+	if !c.isRunning.Load() {
+		c.mu.Unlock()
 		return
 	}
 
-	c.isShuttingDown = true
+	c.isShuttingDown.Store(true)
 	close(c.stopChan)
+	c.mu.Unlock()
 
-	// Wait for any running jobs to complete
+	// Wait for any running jobs to complete (without holding c.mu, so
+	// processJob's metrics/log paths don't deadlock against Stop).
 	c.wg.Wait()
-	c.isRunning = false
+
+	c.mu.Lock()
+	c.isRunning.Store(false)
+	c.handlers = nil
+	c.mu.Unlock()
 }
 
 // runTick runs one tick of the cron runner
 func (c *Cron) runTick(loc *time.Location) {
 	now := time.Now().In(loc)
 
+	// Snapshot handlers under the lock so iteration is safe against
+	// concurrent Start/Stop mutations of c.handlers.
 	c.mu.Lock()
 	if c.metrics != nil {
 		c.metrics.mu.Lock()
 		c.metrics.LastRunAt = &now
 		c.metrics.mu.Unlock()
 	}
-	handlers := c.handlers
+	handlers := make([]*CronHandler, 0, len(c.handlers))
+	for _, h := range c.handlers {
+		handlers = append(handlers, h)
+	}
+	shuttingDown := c.isShuttingDown.Load()
 	c.mu.Unlock()
+
+	if shuttingDown {
+		return
+	}
 
 	for _, h := range handlers {
 		// Check if should run now based on pattern

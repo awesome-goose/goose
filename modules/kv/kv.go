@@ -139,11 +139,14 @@ func (kv *KV) SetNX(key string, value any, ttl ...time.Duration) (bool, error) {
 		}
 	}()
 
-	// Check if key exists with FOR UPDATE lock to prevent race conditions
+	// Check if key exists with FOR UPDATE lock to prevent race conditions.
+	// SQLite serializes write transactions and rejects the hint, so skip it there.
 	var existing KVStore
-	err = tx.Set("gorm:query_option", "FOR UPDATE").
-		Where("\"group\" = ? AND \"key\" = ? AND status = ?", group, key, StatusActive).
-		First(&existing).Error
+	query := tx.Where("\"group\" = ? AND \"key\" = ? AND status = ?", group, key, StatusActive)
+	if tx.Dialector.Name() != "sqlite" {
+		query = query.Set("gorm:query_option", "FOR UPDATE")
+	}
+	err = query.First(&existing).Error
 
 	if err == nil {
 		// Key exists, check if expired

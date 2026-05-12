@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,7 +27,7 @@ func NewConfig(appPath AppConfigPath) (*Config, error) {
 	if dir == "" {
 		defaultDir, err := path.Config()
 		if err != nil {
-			panic("failed to resolve config path: " + err.Error())
+			return nil, fmt.Errorf("failed to resolve config path: %w", err)
 		}
 
 		dir = defaultDir

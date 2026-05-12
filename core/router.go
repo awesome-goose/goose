@@ -11,6 +11,10 @@ import (
 // maxRouteCacheSize is the maximum number of routes to cache
 const maxRouteCacheSize = 1000
 
+// maxRouteDepth caps recursion into route.Children to guard against
+// pathological or malformed route trees causing stack growth.
+const maxRouteDepth = 64
+
 // routeCacheEntry stores a route with its extracted params for caching
 type routeCacheEntry struct {
 	route  *types.Route
@@ -55,7 +59,7 @@ func (r *router) Find(routes types.Routes, method string, paths []string) (*type
 	}
 	r.mu.RUnlock()
 
-	foundRoute, params, err := r.findRecursive(routes, method, paths, nil, make(map[string]string))
+	foundRoute, params, err := r.findRecursive(routes, method, paths, nil, make(map[string]string), 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -78,7 +82,10 @@ func (r *router) Find(routes types.Routes, method string, paths []string) (*type
 	return nil, nil, errors.ErrRouteNotFound.WithMeta(map[string]any{"method": method, "path": strings.Join(paths, "/")})
 }
 
-func (r *router) findRecursive(currentRoutes types.Routes, method string, paths []string, collectedMiddlewares types.Middlewares, params map[string]string) (*types.Route, map[string]string, error) {
+func (r *router) findRecursive(currentRoutes types.Routes, method string, paths []string, collectedMiddlewares types.Middlewares, params map[string]string, depth int) (*types.Route, map[string]string, error) {
+	if depth > maxRouteDepth {
+		return nil, params, errors.ErrRouteDepthExceeded.WithMeta(map[string]any{"depth": depth, "max": maxRouteDepth})
+	}
 	if len(paths) == 0 {
 		return nil, params, nil
 	}
@@ -145,8 +152,11 @@ func (r *router) findRecursive(currentRoutes types.Routes, method string, paths 
 
 			// Has more paths - check children
 			if route.HasChildren() {
-				foundRoute, foundParams, err := r.findRecursive(route.Children, method, remainingAfterMulti, newMiddlewares, branchParams)
-				if err == nil && foundRoute != nil {
+				foundRoute, foundParams, err := r.findRecursive(route.Children, method, remainingAfterMulti, newMiddlewares, branchParams, depth+1)
+				if err != nil {
+					return nil, params, err
+				}
+				if foundRoute != nil {
 					return foundRoute, foundParams, nil
 				}
 			}
@@ -214,12 +224,11 @@ func (r *router) findRecursive(currentRoutes types.Routes, method string, paths 
 
 		// If there are more path segments, traverse into children.
 		if route.HasChildren() {
-			foundRoute, foundParams, err := r.findRecursive(route.Children, method, remainingPaths, newMiddlewares, branchParams)
+			foundRoute, foundParams, err := r.findRecursive(route.Children, method, remainingPaths, newMiddlewares, branchParams, depth+1)
 			if err != nil {
-				if foundRoute != nil {
-					return foundRoute, foundParams, nil
-				}
-			} else if foundRoute != nil {
+				return nil, params, err
+			}
+			if foundRoute != nil {
 				return foundRoute, foundParams, nil
 			}
 		}

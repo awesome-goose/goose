@@ -399,6 +399,12 @@ var (
 		"The requested route was not found",
 		"Check the route registration and request URL",
 	)
+	ErrRouteDepthExceeded = New(
+		"ROUTE_DEPTH_EXCEEDED",
+		"Route nesting depth exceeded",
+		"The route tree was traversed beyond the maximum supported depth",
+		"Flatten deeply nested route trees or raise maxRouteDepth if intentional",
+	)
 	ErrInvalidRouterInstance = New(
 		"INVALID_ROUTER_INSTANCE",
 		"Invalid router instance",

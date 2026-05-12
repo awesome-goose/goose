@@ -7,19 +7,21 @@
 
 # Goose Framework
 
-A modular, scalable Go framework for building modern applications across multiple platforms — API, Web, and CLI.
+A modular Go framework for building API, Web, and CLI applications from a
+single codebase, with DI, declarative routing, and SQL/cache/cron/queue
+modules that all share one database connection.
 
 ---
 
 ## Features
 
-- **Multi-Platform** - Build API, Web, and CLI applications from a single codebase
-- **Modular Architecture** - Organize code into reusable, composable modules
-- **Dependency Injection** - Built-in IoC container for clean, testable code
-- **Database Support** - GORM-based SQL module with migrations (PostgreSQL, MySQL, SQLite)
-- **Built-in Modules** - Cache, Cron, Queues, Key-Value store out of the box
-- **Flexible Routing** - Route-based request handling with middleware support
-- **Environment Config** - Load configuration from files, environment variables, or structs
+- **Multi-Platform** – Build API, Web, and CLI apps from one module tree.
+- **Modular Architecture** – Compose code with `Imports / Exports / Declarations`.
+- **Dependency Injection** – `inject:""` tag, zero-value-resolves-to-instance.
+- **Database Support** – GORM-based SQL module for Postgres, MySQL, and SQLite.
+- **Built-in Modules** – `cache`, `cron`, `queues`, `kv`, `router`.
+- **Layered Logging** – formatters + modifiers + processors composed at boot.
+- **Env / Config** – `env.NewEnv()` plus a YAML-tree `config` package.
 
 ---
 
@@ -33,25 +35,54 @@ go get github.com/awesome-goose/goose
 
 ## Quick Start
 
-### API Application
+### API application
 
 ```go
 package main
 
 import (
-    "github.com/awesome-goose/goose"
-    "github.com/awesome-goose/goose/platforms/api"
+    "os"
+
     "myapp/app"
+
+    "github.com/awesome-goose/goose"
+    "github.com/awesome-goose/goose/log"
+    "github.com/awesome-goose/goose/log/formatters"
+    "github.com/awesome-goose/goose/log/modifiers"
+    "github.com/awesome-goose/goose/log/processors"
+    "github.com/awesome-goose/goose/platforms/api"
+    "github.com/awesome-goose/goose/types"
 )
 
 func main() {
     platform := api.NewPlatform(
+        api.WithName("my-api"),
         api.WithHost("localhost"),
         api.WithPort(8080),
     )
 
+    initializers := []func(types.Container) error{
+        func(c types.Container) error {
+            return c.Register(func() types.Log {
+                return log.NewLog(
+                    log.AppLogChannel("std"),
+                    log.NewLogger(
+                        []types.Modifier{
+                            modifiers.NewUUID(),
+                            modifiers.NewColorTagsModifier(),
+                            modifiers.NewSystemInfo(),
+                            modifiers.NewStackTrace(),
+                        },
+                        formatters.NewSyslog("my-api", os.Getpid()),
+                        processors.NewConsole(),
+                    ),
+                )
+            }, "", true)
+        },
+    }
+
     stop, err := goose.Start(
-        goose.API(platform, app.NewModule(), nil),
+        goose.API(platform, &app.AppModule{}, initializers),
     )
     if err != nil {
         panic(err)
@@ -60,7 +91,7 @@ func main() {
 }
 ```
 
-### Multi-Platform Application
+### Multi-platform application
 
 ```go
 package main
@@ -68,15 +99,15 @@ package main
 import (
     "github.com/awesome-goose/goose"
     "github.com/awesome-goose/goose/platforms/api"
-    "github.com/awesome-goose/goose/platforms/web"
     "github.com/awesome-goose/goose/platforms/cli"
+    "github.com/awesome-goose/goose/platforms/web"
 )
 
 func main() {
     stop, err := goose.Start(
-        goose.API(apiPlatform, apiModule, nil),
-        goose.Web(webPlatform, webModule, nil),
-        goose.CLI(cliPlatform, cliModule, nil),
+        goose.API(apiPlatform, apiModule, apiInitializers),
+        goose.Web(webPlatform, webModule, webInitializers),
+        goose.CLI(cliPlatform, cliModule, cliInitializers),
     )
     if err != nil {
         panic(err)
@@ -84,6 +115,10 @@ func main() {
     defer stop()
 }
 ```
+
+When more than one instance is registered, API/Web run concurrently in the
+background and CLI runs only when the binary is invoked with the `cli`
+sub-argument.
 
 ---
 
@@ -91,42 +126,24 @@ func main() {
 
 ```
 goose/
-├── index.go              # Main entry point (Start, API, Web, CLI)
-├── config/               # Configuration management
-│   ├── config.go         # Config loading and parsing
-│   ├── dotted.go         # Dotted key access
-│   └── struct.go         # Struct-based config
-├── core/                 # Core framework components
-│   ├── kernel.go         # Application kernel
-│   ├── container.go      # Dependency injection container
-│   ├── router.go         # Request router
-│   ├── registry.go       # Service registry
-│   ├── serializer.go     # Data serialization
-│   └── traverser.go      # Module traversal
-├── env/                  # Environment variable handling
-│   └── sources/          # File and OS env sources
-├── errors/               # Error types and handling
-├── io/                   # Input/Output handling
-│   ├── input/            # Request input parsing
-│   ├── output/           # Response outputs (JSON, HTML, Console)
-│   └── resources/        # Static resources
-├── log/                  # Logging system
-│   ├── formatters/       # JSON, Line, Syslog formats
-│   ├── modifiers/        # Color, Stack trace, UUID
-│   └── processors/       # Console, File, Syslog output
+├── index.go              # goose.Start / goose.API / goose.Web / goose.CLI
+├── config/               # YAML-tree config (config.NewConfig)
+├── core/                 # kernel, DI container, router, registry
+├── env/                  # env.NewEnv + sources (OS, .env file)
+├── errors/               # Typed error catalogue
+├── io/                   # Input parsing and output (JSON/HTML/Console)
+├── log/                  # log.NewLog / log.NewLogger + formatters/modifiers/processors
 ├── modules/              # Built-in modules
-│   ├── cache/            # Caching module
-│   ├── cron/             # Scheduled tasks
-│   ├── kv/               # Key-value store
-│   ├── queues/           # Job queues
+│   ├── cache/            # SQL-backed cache (Get/Set/Remember[T])
+│   ├── cron/             # Scheduled jobs
+│   ├── kv/               # SQL-backed key-value store
+│   ├── queues/           # SQL-backed job queue
 │   ├── router/           # Routing utilities
-│   └── sql/              # Database (GORM)
-├── platforms/            # Platform implementations
-│   ├── api/              # REST API platform
-│   ├── cli/              # CLI platform
-│   └── web/              # Web platform
-├── types/                # Core type definitions
-└── utils/                # Utility functions
+│   └── sql/              # GORM database (Postgres/MySQL/SQLite)
+├── platforms/            # api / web / cli
+├── testing/              # Suite runner, assertions, mocks
+├── types/                # Public interfaces (Module, Route, Context, ...)
+└── utils/                # Small helpers (path, rand, string, slice)
 ```
 
 ---
@@ -135,23 +152,24 @@ goose/
 
 ### Modules
 
-Modules are the building blocks of a Goose application. Each module defines its imports, exports, and declarations:
+A module declares what it brings in, what it makes available to the rest of
+the app, and which services it owns:
 
 ```go
-type appModule struct{}
+type AppModule struct{}
 
-func (m *appModule) Imports() []types.Module {
+func (m *AppModule) Imports() []types.Module {
     return []types.Module{
-        sql.NewModule(&sql.Config{Driver: "sqlite"}, true),
-        cache.NewModule(nil, true),
+        sql.Root(&sql.Config{Dialect: "sqlite", Name: "app.db", Sync: true}),
+        cache.NewModule(&cache.Config{DefaultTTL: time.Hour}, false),
     }
 }
 
-func (m *appModule) Exports() []any {
+func (m *AppModule) Exports() []any {
     return []any{&AppService{}}
 }
 
-func (m *appModule) Declarations() []any {
+func (m *AppModule) Declarations() []any {
     return []any{
         &AppController{},
         &AppService{},
@@ -161,50 +179,52 @@ func (m *appModule) Declarations() []any {
 
 ### Controllers
 
-Controllers handle requests and define routes:
+Controllers define routes and inject the services they need:
 
 ```go
 type AppController struct {
     Service *AppService `inject:""`
 }
 
-func (c *AppController) Routes() []types.Route {
-    return []types.Route{
-        {Method: "GET", Path: "/", Handler: c.Index},
+func (c *AppController) Routes() types.Routes {
+    return types.Routes{
+        {Method: "GET", Path: "/",         Handler: c.Index},
         {Method: "GET", Path: "/users/:id", Handler: c.GetUser},
     }
 }
 
-func (c *AppController) Index(ctx *types.Context) {
-    ctx.JSON(200, map[string]string{"message": "Hello, Goose!"})
+func (c *AppController) Index(ctx types.Context) any {
+    return map[string]string{"message": "Hello, Goose!"}
 }
 ```
 
 ### Services
 
-Services contain business logic and are injected into controllers:
-
 ```go
 type AppService struct {
-    DB    *sql.Db    `inject:""`
+    DB    *sql.Db      `inject:""`
     Cache *cache.Cache `inject:""`
 }
 
-func (s *AppService) GetUser(id int) (*User, error) {
+func (s *AppService) GetUser(id string) (*User, error) {
     var user User
-    err := s.DB.First(&user, id).Error
-    return &user, err
+    return &user, s.DB.First(&user, "id = ?", id).Error
 }
 ```
 
 ### Dependency Injection
 
-Use the `inject:""` tag for automatic dependency injection:
+Use the `inject:""` tag for automatic injection of pointer-to-struct or
+interface fields. Tag values control naming:
+
+- `inject:""`  – type-only, single registration
+- `inject:"name"` – named registration
+- `inject:"type"` / `inject:"name"` – explicit name strategy
 
 ```go
 type MyController struct {
-    UserService  *UserService  `inject:""`
-    Logger       types.Log     `inject:""`
+    UserService *UserService `inject:""`
+    Logger      types.Log    `inject:""`
 }
 ```
 
@@ -214,63 +234,78 @@ type MyController struct {
 
 ### SQL Module
 
-Database access with GORM:
-
 ```go
-sql.NewModule(&sql.Config{
-    Driver:   "postgres", // postgres, mysql, sqlite
+sql.Root(&sql.Config{
+    Dialect:  "postgres", // "postgres" | "mysql" | "sqlite"
     Host:     "localhost",
     Port:     5432,
-    Database: "mydb",
-    Username: "user",
-    Password: "pass",
-    Migrations: []types.Migration{...},
-}, true)
+    Name:     "myapp",
+    User:     "postgres",
+    Pass:     "secret",
+    SSLMode:  "disable",
+    Schema:   "public",
+    TimeZone: "UTC",
+    Sync:     true, // auto-migrate registered entities
+})
 ```
+
+`sql.Root(cfg)` is shorthand for `sql.NewModule(cfg, true)`; use
+`sql.Child(cfg)` (or `sql.NewModule(cfg, false)`) to reuse the root
+connection inside a feature module.
 
 ### Cache Module
 
-Key-value caching with TTL:
-
 ```go
 cache.NewModule(&cache.Config{
-    DefaultTTL: 3600, // seconds
-}, true)
+    Group:           "app",
+    DefaultTTL:      time.Hour,
+    CleanupInterval: 10 * time.Minute,
+}, false)
 ```
+
+The cache is SQL-backed and shares the connection registered by the SQL
+module. Use `cache.Remember[T]` / `cache.GetAs[T]` for typed access.
 
 ### Cron Module
 
-Scheduled task execution:
-
 ```go
-cron.NewModule(&cron.Config{}, true)
+cron.NewModule(&cron.Config{
+    TickInterval: time.Minute,
+    Timezone:     "Etc/UTC",
+}, handlers, false)
 ```
+
+Where `handlers` is a `[]*cron.CronHandler` built via `cron.NewHandler` /
+`cron.NewSimpleHandler` / `cron.NewTypedHandler[T]`.
 
 ### Queues Module
 
-Background job processing:
-
 ```go
-queues.NewModule(&queues.Config{
-    Workers: 5,
-}, true)
+queues.Root(queues.DefaultConfig(), jobHandlers...)
 ```
+
+`jobHandlers` are `*queues.JobHandler` values. Worker counts are
+per-handler via `.WithMinWorkers(n).WithMaxWorkers(n)` — there is no
+`Workers` field on the module config.
 
 ### KV Module
 
-Persistent key-value storage:
-
 ```go
-kv.NewModule(&kv.Config{}, true)
+kv.NewModule(&kv.Config{
+    Group:           "app",
+    DefaultTTL:      0,           // 0 = no expiration
+    CleanupInterval: time.Hour,
+}, false)
 ```
+
+`*kv.KV` exposes `Get/Set/SetNX/GetSet/Del/TTL/Expire/Persist/Exists/Keys/Incr/IncrBy`.
+It is not a Redis client — it persists through the SQL module's connection.
 
 ---
 
 ## Platforms
 
 ### API Platform
-
-REST API with JSON responses:
 
 ```go
 api.NewPlatform(
@@ -282,8 +317,6 @@ api.NewPlatform(
 
 ### Web Platform
 
-Web application with HTML templates:
-
 ```go
 web.NewPlatform(
     web.WithName("my-web"),
@@ -292,8 +325,6 @@ web.NewPlatform(
 ```
 
 ### CLI Platform
-
-Command-line interface:
 
 ```go
 cli.NewPlatform(
@@ -305,112 +336,116 @@ cli.NewPlatform(
 
 ## Configuration
 
-### Environment Variables
+### Environment variables
+
+`env.NewEnv()` auto-loads from the OS environment and a `.env` file in the
+working directory:
 
 ```go
 import "github.com/awesome-goose/goose/env"
 
-env.Load(
-    env.FromFile(".env"),
-    env.FromOS(),
-)
+e := env.NewEnv()
 
-port := env.Get("PORT", "8080")
+host := e.GetWithDefault("HOST", "localhost")
+port := e.GetInt("PORT")
+debug := e.GetBool("DEBUG")
 ```
 
-### Struct-based Config
+Methods on `*env.Env`: `Get(key) string`, `Set(key, value)`,
+`GetWithDefault(key, default) string`, `GetInt(key) int`,
+`GetBool(key) bool`, `GetFloat(key) float64`, plus
+`FromSources(...types.EnvSource)`.
+
+### YAML config
 
 ```go
 import "github.com/awesome-goose/goose/config"
 
-type AppConfig struct {
-    Port     int    `env:"PORT" default:"8080"`
-    Database string `env:"DATABASE_URL"`
+cfg, err := config.NewConfig("./config") // reads every *.yaml/*.yml in dir
+if err != nil {
+    panic(err)
 }
 
-var cfg AppConfig
-config.Load(&cfg)
+cfg.Tree() // map keyed by file basename
+cfg.Dir()  // absolute path to the loaded directory
 ```
+
+The kernel injects an `*config.Config` if you register it from an
+initializer.
 
 ---
 
 ## Logging
 
-```go
-import "github.com/awesome-goose/goose/log"
+Goose logs flow through three composable pieces:
 
-logger := log.NewLogger(
-    log.WithFormatter(formatters.JSON()),
-    log.WithProcessor(processors.Console()),
-    log.WithModifier(modifiers.Color()),
+1. **Modifiers** enrich the record (UUID, colors, stack traces, system info)
+2. **Formatter** turns the record into bytes (Line, JSON, Syslog)
+3. **Processor** writes the bytes (Console, File, Syslog)
+
+```go
+logger := log.NewLog(
+    log.AppLogChannel("std"),
+    log.NewLogger(
+        []types.Modifier{
+            modifiers.NewUUID(),
+            modifiers.NewColorTagsModifier(),
+            modifiers.NewSystemInfo(),
+            modifiers.NewStackTrace(),
+        },
+        formatters.NewSyslog("my-api", os.Getpid()),
+        processors.NewConsole(),
+    ),
 )
 
-logger.Info("Server started", map[string]any{"port": 8080})
-logger.Error("Failed to connect", map[string]any{"error": err})
+logger.Info("Server started", "port", 8080)
+logger.Error("Failed to connect", "error", err)
 ```
+
+Add additional channels with `logger.Add("file", anotherLogger)` and switch
+between them via `logger.Use("file")`.
 
 ---
 
 ## Utilities
 
-```go
-import "github.com/awesome-goose/goose/utils"
+The `utils` package is a small collection of sub-packages, not a single
+namespaced object:
 
-// String utilities
-utils.String.Slug("Hello World")     // "hello-world"
-utils.String.Capitalize("hello")     // "Hello"
+- `utils/path` – `UserHome`, `AppRoot`, `CurrentDir`, plus typed
+  app-relative helpers (`Config`, `App`, `Database`, `Lang`, `Public`,
+  `Assets`, `Storage`).
+- `utils/rand` – `UUID()`.
+- `utils/string` – `IsValidHTTPMethod(s)`, `SplitPath(p)`, `Split(s, sep)`.
+- `utils/slice` – currently empty (reserved for future helpers).
 
-// Slice utilities
-utils.Slice.Contains([]int{1, 2, 3}, 2)  // true
-
-// Random utilities
-utils.Rand.String(16)                // Random 16-char string
-
-// Path utilities
-utils.Path.Join("a", "b", "c")       // "a/b/c"
-```
+For string-case conversions or generic slice operations, use the standard
+library or `golang.org/x/text/cases`.
 
 ---
 
 ## Testing
 
-Goose includes a comprehensive testing package with fluent assertions, mocks, and suite runners.
+Goose ships a small testing package with fluent assertions, mocks, and a
+suite runner.
 
-### Running Tests
+### Running tests
 
 ```bash
-# Run all tests
 go test ./tests/...
-
-# Run with verbose output
 go test ./tests/... -v
-
-# Run a specific test file
 go test ./tests/... -run TestRouter
-
-# Run a specific test case
 go test ./tests/... -run TestRouter/TestFind_SimpleRouteMatch
 ```
 
-### Code Coverage
-
-```bash
-# Coverage for all goose packages
-go test ./tests/... -coverpkg=./...
-
-# Coverage for specific packages
-go test ./tests/... -coverpkg=./config,./core,./env,./errors,./utils/...
-```
-
-### Writing Tests
-
-Use the built-in testing utilities:
+### Writing tests
 
 ```go
 package tests
 
 import (
     "testing"
+
     test "github.com/awesome-goose/goose/testing"
 )
 
@@ -423,11 +458,11 @@ type MySuite struct {
 }
 
 func (s *MySuite) SetupTest() {
-    // Runs before each test
+    // before each test
 }
 
 func (s *MySuite) TeardownTest() {
-    // Runs after each test
+    // after each test
 }
 
 func (s *MySuite) TestSomething() {
@@ -438,14 +473,16 @@ func (s *MySuite) TestSomething() {
 }
 ```
 
-### Available Assertions
+### Available assertions
 
 ```go
 // Equality
 s.T.Expect(actual).ToEqual(expected)
 s.T.Expect(actual).Not().ToEqual(unexpected)
+s.T.Expect(actual).ToDeepEqual(expected)
+s.T.Expect(actual).ToBe(expected) // identity for pointers
 
-// Nil checks
+// Nil
 s.T.Expect(value).ToBeNil()
 s.T.Expect(value).Not().ToBeNil()
 
@@ -453,13 +490,35 @@ s.T.Expect(value).Not().ToBeNil()
 s.T.Expect(condition).ToBeTrue()
 s.T.Expect(condition).ToBeFalse()
 
-// Length
+// Length / emptiness
 s.T.Expect(slice).ToHaveLength(3)
 s.T.Expect(slice).ToBeEmpty()
 
 // Contains
-s.T.Expect("hello world").ToContain("world")
 s.T.Expect(slice).ToContain(element)
+s.T.Expect("hello world").ToContainString("world")
+
+// Numeric
+s.T.Expect(n).ToBeGreaterThan(0)
+s.T.Expect(n).ToBeLessOrEqual(100)
+s.T.Expect(n).ToBeBetween(0, 10)
+
+// Strings
+s.T.Expect("foo-bar").ToHavePrefix("foo")
+s.T.Expect("foo-bar").ToHaveSuffix("bar")
+s.T.Expect("abc123").ToMatchRegex(`^\w+$`)
+
+// Types
+s.T.Expect(value).ToBeType("string")
+s.T.Expect(thing).ToImplement((*io.Reader)(nil))
+
+// Panics
+s.T.Expect(func() { panic("x") }).ToPanic()
+s.T.Expect(fn).ToPanicWith("expected")
+
+// Maps
+s.T.Expect(m).ToHaveKey("id")
+s.T.Expect(m).ToHaveKeyValue("status", "ok")
 ```
 
 ### Mocking
@@ -471,7 +530,7 @@ type MockUserService struct {
 
 func (m *MockUserService) GetUser(id int) string {
     args := m.mock.Called("GetUser", id)
-    if args != nil && len(args) > 0 {
+    if len(args) > 0 {
         return args[0].(string)
     }
     return ""
