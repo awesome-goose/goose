@@ -15,7 +15,7 @@ const (
 // Job status constants
 const (
 	JobStatusNew        = "new"
-	JobStatusInProgress = "in_progress"
+	JobStatusInProgress = "in-progress"
 	JobStatusSuccess    = "success"
 	JobStatusFailed     = "failed"
 	JobStatusRetrying   = "retrying"

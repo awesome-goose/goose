@@ -8,7 +8,7 @@ import (
 // Job status constants
 const (
 	JobStatusPending    = "pending"
-	JobStatusInProgress = "in_progress"
+	JobStatusInProgress = "in-progress"
 	JobStatusSuccess    = "success"
 	JobStatusFailed     = "failed"
 	JobStatusExpired    = "expired"
