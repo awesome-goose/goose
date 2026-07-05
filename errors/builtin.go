@@ -300,7 +300,7 @@ var (
 		"NO_RUNNABLE_INSTANCES",
 		"No runnable instances available",
 		"No platform instances are available to run",
-		"Provide at least one API, Web, or CLI instance",
+		"Provide at least one API, Web, SPA, or CLI instance",
 	)
 	ErrInitializationError = New(
 		"INITIALIZATION_ERROR",

@@ -20,6 +20,7 @@ var defaultKernel = core.NewKernel()
 //	stop, err := goose.Start(
 //		goose.API(apiPlatform, apiModule, apiInitializers),
 //		goose.Web(webPlatform, webModule, webInitializers),
+//		goose.SPA(spaPlatform, spaModule, spaInitializers),
 //		goose.CLI(cliPlatform, cliModule, cliInitializers),
 //	)
 func Start(instances ...*types.Instance) (func() error, error) {
@@ -42,6 +43,19 @@ func Web(platform types.Platform, module types.Module, initializers []func(conta
 	return &types.Instance{
 		Name:         platform.Name(),
 		Type:         types.PlatformTypeWeb,
+		Platform:     platform,
+		Module:       module,
+		Initializers: initializers,
+	}
+}
+
+// SPA creates a SPA platform instance: a single HTTP service that serves
+// JSON API routes under an API prefix and a single-page app's static assets
+// (with index.html fallback for client-side routing) for everything else.
+func SPA(platform types.Platform, module types.Module, initializers []func(container types.Container) error) *types.Instance {
+	return &types.Instance{
+		Name:         platform.Name(),
+		Type:         types.PlatformTypeSPA,
 		Platform:     platform,
 		Module:       module,
 		Initializers: initializers,

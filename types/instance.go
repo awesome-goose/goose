@@ -7,6 +7,7 @@ const (
 	PlatformTypeAPI PlatformType = "api"
 	PlatformTypeWeb PlatformType = "web"
 	PlatformTypeCLI PlatformType = "cli"
+	PlatformTypeSPA PlatformType = "spa"
 )
 
 // Instance represents a single app instance with its platform, module, and initializers.

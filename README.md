@@ -7,15 +7,15 @@
 
 # Goose Framework
 
-A modular Go framework for building API, Web, and CLI applications from a
-single codebase, with DI, declarative routing, and SQL/cache/cron/queue
+A modular Go framework for building API, Web, SPA, and CLI applications from
+a single codebase, with DI, declarative routing, and SQL/cache/cron/queue
 modules that all share one database connection.
 
 ---
 
 ## Features
 
-- **Multi-Platform** – Build API, Web, and CLI apps from one module tree.
+- **Multi-Platform** – Build API, Web, SPA, and CLI apps from one module tree.
 - **Modular Architecture** – Compose code with `Imports / Exports / Declarations`.
 - **Dependency Injection** – `inject:""` tag, zero-value-resolves-to-instance.
 - **Database Support** – GORM-based SQL module for Postgres, MySQL, and SQLite.
@@ -126,7 +126,7 @@ sub-argument.
 
 ```
 goose/
-├── index.go              # goose.Start / goose.API / goose.Web / goose.CLI
+├── index.go              # goose.Start / goose.API / goose.Web / goose.SPA / goose.CLI
 ├── config/               # YAML-tree config (config.NewConfig)
 ├── core/                 # kernel, DI container, router, registry
 ├── env/                  # env.NewEnv + sources (OS, .env file)
@@ -140,7 +140,7 @@ goose/
 │   ├── queues/           # SQL-backed job queue
 │   ├── router/           # Routing utilities
 │   └── sql/              # GORM database (Postgres/MySQL/SQLite)
-├── platforms/            # api / web / cli
+├── platforms/            # api / web / spa / cli
 ├── testing/              # Suite runner, assertions, mocks
 ├── types/                # Public interfaces (Module, Route, Context, ...)
 └── utils/                # Small helpers (path, rand, string, slice)
@@ -323,6 +323,25 @@ web.NewPlatform(
     web.WithPort(3000),
 )
 ```
+
+### SPA Platform
+
+One HTTP service that serves JSON API routes under an API prefix (default
+`/api`) and a single-page app's static assets for every other path, with an
+`index.html` fallback for client-side routing.
+
+```go
+spa.NewPlatform(
+    spa.WithName("my-spa"),
+    spa.WithPort(8080),
+    spa.WithStaticDir("public"),   // built frontend assets
+    spa.WithIndexFile("index.html"),
+    spa.WithAPIPrefix("/api"),
+)
+```
+
+Routes are declared exactly like an API app — without the prefix. A route
+registered as `GET /users` is served at `GET /api/users`.
 
 ### CLI Platform
 
