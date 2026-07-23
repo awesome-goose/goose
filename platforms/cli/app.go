@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+
 	"github.com/awesome-goose/goose/types"
 )
 
@@ -14,7 +16,20 @@ func NewApp(config *Config) *App {
 
 func (a *App) Run(fn func(c types.Context) error) error {
 	context := NewContext()
-	return fn(context)
+	if err := fn(context); err != nil {
+		return err
+	}
+
+	// A nonzero Output.Code() (e.g. output.ConsoleError(...).WithExitCode(1))
+	// signals command failure; translate it into a real process exit code so
+	// `$?` reflects it. Code 0 (the default for Console/ConsoleSuccess/etc.)
+	// falls through normally so callers can still run their own deferred
+	// cleanup after goose.Start(...) returns.
+	if code := context.response.Code(); code != 0 {
+		os.Exit(code)
+	}
+
+	return nil
 }
 
 func (a *App) Shutdown() error {

@@ -3,6 +3,7 @@ package queues
 import (
 	"time"
 
+	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/modules/queues/migrations"
 	"github.com/awesome-goose/goose/modules/sql"
 	"github.com/awesome-goose/goose/types"
@@ -73,10 +74,19 @@ func (m *queuesModule) Boot(k types.Kernel) error {
 
 	// Start handlers if any are registered
 	if len(m.handlers) > 0 {
-		var queue *Queue
-		err := container.Resolve(&queue, "")
+		// *Queue is only made constructible via Declarations() (tracked by
+		// the registry's own declarationIndex), not via container.Register,
+		// so it must be looked up through the registry rather than
+		// container.Resolve. See BUGS.md #2 for the cron module's version of
+		// this same mistake.
+		info, err := k.Registry().Get(&Queue{})
 		if err != nil {
 			return err
+		}
+
+		queue, ok := info.Instance.(*Queue)
+		if !ok {
+			return errors.ErrDeclarationTypeMismatch.WithMeta("*queues.Queue")
 		}
 
 		// Initialize and start processing for each handler

@@ -40,7 +40,7 @@ var (
 		func(path config.AppConfigPath, _ types.Env) (types.Config, error) {
 			return config.NewConfig(path)
 		},
-		func(channel log.AppLogChannel, loggers []*log.Logger) (types.Log, error) {
+		func(channel log.AppLogChannel, loggers log.AppLoggers) (types.Log, error) {
 			return log.NewLog(channel, loggers...), nil
 		},
 	}

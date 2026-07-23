@@ -9,6 +9,7 @@ import (
 type Response struct {
 	raw     *os.File
 	headers map[string]string
+	code    int
 }
 
 func NewResponse(raw *os.File) *Response {
@@ -42,7 +43,15 @@ func (r *Response) Write(serialType types.SerialType, data []byte, statusCode in
 			return err
 		}
 	}
+	r.code = statusCode
 	return nil
+}
+
+// Code returns the exit code from the most recent Write call (i.e. the
+// handler's Output.Code()), so App.Run can translate it into a real process
+// exit code once the CLI command finishes.
+func (r *Response) Code() int {
+	return r.code
 }
 
 // SetHeader stores a header (no-op for CLI, but maintains interface compatibility)

@@ -247,6 +247,12 @@ var (
 		"The requested declaration type was not found",
 		"Register the declaration in a module before accessing",
 	)
+	ErrDeclarationTypeMismatch = New(
+		"DECLARATION_TYPE_MISMATCH",
+		"Declaration instance is not of the expected type",
+		"The registry returned an instance whose concrete type does not match what was requested",
+		"Ensure the declaration is registered with the type it's being looked up as",
+	)
 	ErrInstanceNotModule = New(
 		"INSTANCE_NOT_MODULE",
 		"Instance created from module is not a module",

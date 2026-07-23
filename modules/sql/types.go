@@ -180,12 +180,12 @@ type UUIDAware struct {
 }
 
 type TimeAware struct {
-	CreatedAt *time.Time `gorm:"index;column:created_at;not null" json:"created_at,omitempty" binding:"-"`
-	UpdatedAt *time.Time `gorm:"index;column:updated_at;not null" json:"updated_at,omitempty" binding:"-"`
+	CreatedAt *time.Time `gorm:"index;column:created_at;not null" json:"createdAt,omitempty" binding:"-"`
+	UpdatedAt *time.Time `gorm:"index;column:updated_at;not null" json:"updatedAt,omitempty" binding:"-"`
 }
 
 type SoftDeleteAware struct {
-	DeletedAt gorm.DeletedAt `gorm:"index;column:deleted_at" json:"deleted_at,omitempty" binding:"-"`
+	DeletedAt gorm.DeletedAt `gorm:"index;column:deleted_at" json:"deletedAt,omitempty" binding:"-"`
 }
 
 // Hook and morph lifecycle constants

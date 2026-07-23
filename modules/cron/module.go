@@ -3,6 +3,7 @@ package cron
 import (
 	"context"
 
+	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/modules/cron/migrations"
 	"github.com/awesome-goose/goose/modules/sql"
 	"github.com/awesome-goose/goose/types"
@@ -69,10 +70,17 @@ func (m *cronModule) Boot(k types.Kernel) error {
 
 	// Start cron runner with registered handlers
 	if len(m.handlers) > 0 {
-		var cronService *Cron
-		err := container.Resolve(&cronService, "")
+		// *Cron is only made constructible via Declarations() (tracked by the
+		// registry's own declarationIndex), not via container.Register, so it
+		// must be looked up through the registry rather than container.Resolve.
+		info, err := k.Registry().Get(&Cron{})
 		if err != nil {
 			return err
+		}
+
+		cronService, ok := info.Instance.(*Cron)
+		if !ok {
+			return errors.ErrDeclarationTypeMismatch.WithMeta("*cron.Cron")
 		}
 
 		// Start cron runner in background

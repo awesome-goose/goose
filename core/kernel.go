@@ -140,6 +140,15 @@ func (k *kernel) runMulti(instances []*types.Instance) (func() error, error) {
 
 // runCLI runs a CLI instance in the main goroutine (blocking)
 func (k *kernel) runCLI(inst *types.Instance) (func() error, error) {
+	// Strip the "cli" mode selector (used by runMulti to route between
+	// platforms) before the CLI platform parses os.Args, so a multi-instance
+	// app's Request sees the same argument shape as a single-instance CLI
+	// app: os.Args[1:] holds only the real command args, with no "cli/"
+	// prefix required on registered routes.
+	if len(os.Args) > 1 && os.Args[1] == "cli" {
+		os.Args = append(os.Args[:1], os.Args[2:]...)
+	}
+
 	childKernel := NewKernel()
 	k.mu.Lock()
 	k.childKernels = append(k.childKernels, childKernel)

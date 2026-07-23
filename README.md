@@ -91,6 +91,10 @@ func main() {
 }
 ```
 
+The `types.Log` Initializer above is optional — without one, goose falls
+back to a default JSON-over-console logger on the `"std"` channel. Supply
+your own (as shown) to pick a different channel, formatter, or processor.
+
 ### Multi-platform application
 
 ```go
@@ -118,7 +122,10 @@ func main() {
 
 When more than one instance is registered, API/Web run concurrently in the
 background and CLI runs only when the binary is invoked with the `cli`
-sub-argument.
+sub-argument (`myapp cli install`). The `cli` selector itself is stripped
+before routing, so CLI routes are registered the same way whether the app
+has one instance or several — a route matching `myapp cli install` is
+registered as `router.Cli("install", ...)`, not `"cli/install"`.
 
 ---
 
@@ -253,6 +260,11 @@ sql.Root(&sql.Config{
 `sql.Child(cfg)` (or `sql.NewModule(cfg, false)`) to reuse the root
 connection inside a feature module.
 
+`sql.BaseEntity` embeds `UUIDAware`/`TimeAware`/`SoftDeleteAware`, giving
+every entity `Id`, `CreatedAt`, `UpdatedAt`, and `DeletedAt` fields that
+serialize over JSON as `id`/`createdAt`/`updatedAt`/`deletedAt` (the
+underlying `gorm:` columns stay `created_at`/`updated_at`/`deleted_at`).
+
 ### Cache Module
 
 ```go
@@ -350,6 +362,13 @@ cli.NewPlatform(
     cli.WithName("my-cli"),
 )
 ```
+
+A handler's returned `Output.Code()` becomes the process's real exit code:
+`output.ConsoleSuccess(...)`/`.Console(...)`/etc. default to `0`, while
+`output.ConsoleError(...)` and `.WithExitCode(n)` exit the process with `n`
+once the command finishes (`os.Exit` runs for any nonzero code — code `0`
+falls through normally so your own deferred cleanup after `goose.Start(...)`
+still runs).
 
 ---
 
