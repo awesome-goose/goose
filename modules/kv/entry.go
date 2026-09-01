@@ -24,7 +24,7 @@ type KVStore struct {
 
 // TableName returns the table name for KVStore
 func (KVStore) TableName() string {
-	return "kv_store"
+	return "KVStore"
 }
 
 // BeforeCreate hook to set defaults

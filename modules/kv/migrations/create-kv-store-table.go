@@ -4,15 +4,15 @@ import (
 	"github.com/awesome-goose/goose/modules/sql"
 )
 
-// CreateKVStoreTable creates the kv_store table for key-value storage
+// CreateKVStoreTable creates the KVStore table for key-value storage
 type CreateKVStoreTable struct {
 	sql.BaseMigration
 }
 
-// Run executes the migration to create the kv_store table
+// Run executes the migration to create the KVStore table
 func (m *CreateKVStoreTable) Run(q *sql.Query) error {
 	_, err := q.Exec(`
-		CREATE TABLE IF NOT EXISTS kv_store (
+		CREATE TABLE IF NOT EXISTS "KVStore" (
 			id UUID PRIMARY KEY NOT NULL,
 			created_at TIMESTAMP(6) NOT NULL,
 			updated_at TIMESTAMP(6) NOT NULL,
@@ -24,13 +24,13 @@ func (m *CreateKVStoreTable) Run(q *sql.Query) error {
 			meta JSONB,
 			status VARCHAR(255) NOT NULL DEFAULT 'active'
 		);
-		
-		CREATE INDEX IF NOT EXISTS idx_kv_store_created_at ON kv_store(created_at);
-		CREATE INDEX IF NOT EXISTS idx_kv_store_updated_at ON kv_store(updated_at);
-		CREATE INDEX IF NOT EXISTS idx_kv_store_deleted_at ON kv_store(deleted_at);
-		CREATE INDEX IF NOT EXISTS idx_kv_store_expired_at ON kv_store(expired_at);
-		CREATE INDEX IF NOT EXISTS idx_kv_store_status ON kv_store(status);
-		CREATE INDEX IF NOT EXISTS idx_kv_group_key ON kv_store("group", "key");
+
+		CREATE INDEX IF NOT EXISTS idx_kv_store_created_at ON "KVStore"(created_at);
+		CREATE INDEX IF NOT EXISTS idx_kv_store_updated_at ON "KVStore"(updated_at);
+		CREATE INDEX IF NOT EXISTS idx_kv_store_deleted_at ON "KVStore"(deleted_at);
+		CREATE INDEX IF NOT EXISTS idx_kv_store_expired_at ON "KVStore"(expired_at);
+		CREATE INDEX IF NOT EXISTS idx_kv_store_status ON "KVStore"(status);
+		CREATE INDEX IF NOT EXISTS idx_kv_group_key ON "KVStore"("group", "key");
 	`)
 	return err
 }

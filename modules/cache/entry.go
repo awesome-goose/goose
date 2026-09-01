@@ -23,7 +23,7 @@ type CacheStore struct {
 
 // TableName returns the table name for CacheStore
 func (CacheStore) TableName() string {
-	return "cache_store"
+	return "CacheStore"
 }
 
 // BeforeCreate hook to set defaults

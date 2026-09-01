@@ -2,7 +2,7 @@ package cache
 
 import "github.com/awesome-goose/goose/types"
 
-// Root creates a root Cache module that initializes the cache_store table and registers the Cache service.
+// Root creates a root Cache module that initializes the CacheStore table and registers the Cache service.
 // Use this in the main application module.
 func Root(config *Config) types.Module {
 	return NewModule(config, true)
