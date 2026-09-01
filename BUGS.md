@@ -260,3 +260,117 @@ actual DB columns — only the JSON wire format changed). Regression test:
 Apps carrying the `ngx-apps/projects/spaces` workaround (reading
 `payload?.createdAt ?? payload?.created_at` on the frontend) can drop the
 `created_at` fallback — the API now always sends `createdAt`.
+
+---
+
+## 6. Module `Boot()` hooks run in non-deterministic order — OPEN
+
+**File:** `core/traverser.go:53-56` (`collectHooks`), `core/registry.go:433-442`
+(`ListModules`), `core/registry.go:445-459` (`ListDeclarations`).
+
+Found while building `scrapper` (2026-07-29). `Hydrate` processes modules in
+correct topological order — dependencies before dependents, via
+`topologicalSort` and the `for _, mod := range sorted { processModule(mod) }`
+loop — so `Configure()` hooks and declaration creation are ordered correctly.
+But `Boot()` hooks are collected *separately*, afterward, via `collectHooks`:
+
+```go
+func (t *traverser) collectHooks() {
+	seen := make(map[any]bool)
+
+	for _, module := range t.registry.ListModules() {
+		...
+```
+
+and `ListModules()` iterates a plain Go map:
+
+```go
+moduleRegistry map[types.Module]*resolvedModule
+...
+func (r *Registry) ListModules() []types.Module {
+	...
+	for _, rm := range r.moduleRegistry {
+		modules = append(modules, rm.module)
+	}
+	return modules
+}
+```
+
+Go map iteration order is randomized per the language spec, so the order
+`Boot()` hooks actually fire in bears no relationship to the
+dependency-respecting order `sorted` (and therefore `Configure()`) already
+established. `ListDeclarations` has the identical issue one level down
+(`availableDeclarations map[reflect.Type]*types.DeclarationInfo`).
+
+**Symptom:** any module whose `Boot()` both (a) imports another module via
+`sql.Child(&sql.Config{Migrations: ...})` and (b) starts using that
+dependency's tables immediately in its own `Boot()` — as `modules/queues`
+(`queue.Process(handler)`) and `modules/cron` (`go cronService.Start(...)`)
+both do — can have its own `Boot()` fire *before* its `sql.Child`
+dependency's `Boot()` has run the migration that creates those tables.
+Reproduced consistently while running `scrapper run`/`serve` against a real
+Postgres — non-deterministic per process invocation (roughly coin-flip odds,
+consistent with 2-element map iteration randomization):
+
+```
+ERROR: relation "QueueQueues" does not exist (SQLSTATE 42P01)
+  SELECT * FROM "QueueQueues" WHERE name = 'scrape' ORDER BY "QueueQueues"."id" LIMIT 1
+Failed to register cron job scrapper/tick: ERROR: relation "CronJobs" does not exist (SQLSTATE 42P01)
+```
+
+Harmless in scrapper's specific case (the log noise doesn't affect the
+actual scrape/persist path, since `run` never touches the queue), but it's a
+real correctness gap for any app whose `Boot()`-time logic — not just
+migrations — depends on import order.
+
+**Suggested fix:** either (a) have `Hydrate` hand `collectHooks` the already
+correctly-ordered `sorted` slice directly instead of routing through
+`ListModules()`'s map, or (b) change `moduleRegistry`/`availableDeclarations`
+from maps to an order-preserving structure (slice + index map) so iteration
+order matches insertion/topological order. No regression test yet — would
+need either a fixture with a real dependency chain (`sql.Root` → `sql.Child`
+with a migration → a dependent module whose `Boot()` immediately queries the
+migrated table) run enough times to catch the non-determinism, or a
+deterministic repro that inspects `onBootStack`'s built order directly
+instead of relying on the random map to misbehave.
+
+---
+
+## 7. `sql.Config.Sync` / `WithSync` is dead code — OPEN
+
+**File:** `modules/sql/types.go:18` (field), `types.go:68` (`WithSync` option).
+
+```go
+type Config struct {
+	...
+	Sync     bool
+	...
+}
+...
+func WithSync(sync bool) Option {
+	return func(c *Config) {
+		c.Sync = sync
+	}
+}
+```
+
+Found while building `scrapper` (2026-07-29) — needed to know whether
+`sql.Config{Sync: true}` would auto-migrate entity structs (the natural
+reading of the name, and what the sandbox `api` app's `config.yaml` implies
+by exposing it as `config.sql.sync`). Grepped every non-test `.go` file in
+`modules/sql/`: `Config.Sync` is written once (`WithSync`) and never read
+anywhere else — not in `module.go`'s `initialize()`/`Configure()`/`Boot()`,
+not in `entity.go`, not in `runner.go`. There is no `AutoMigrate`-from-
+struct-tags path in this module at all; schema changes are exclusively
+hand-written `sql.Migration`s run via `Config.Migrations`.
+
+**Symptom:** a consumer setting `Sync: true` (or `WithSync(true)`, or the
+sandbox app's `config.sql.sync` key) reasonably expects some auto-migration
+behavior and silently gets none — no error, no log, just a config field that
+does nothing. `scrapper`'s own `docs/TRD.md` (§6.3) had to call this out
+explicitly so nobody there relies on it.
+
+**Suggested fix:** either wire it to something real (e.g. `db.AutoMigrate(...)`
+over the module's own declared entities, if that's the intended behavior) or
+remove the field/option entirely and let the compiler catch existing
+callers — a silently-ignored bool is worse than a missing one.
