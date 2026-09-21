@@ -98,3 +98,17 @@ func (m *queuesModule) Boot(k types.Kernel) error {
 
 	return nil
 }
+
+// Shutdown implements types.Shutdownable: on kernel shutdown it stops the queue's
+// workers and waits for the jobs they are running, instead of leaving them polling
+// (and abandoning those jobs) after the kernel has gone.
+func (m *queuesModule) Shutdown(k types.Kernel) error {
+	info, err := k.Registry().Get(&Queue{})
+	if err != nil {
+		return nil // the queue was never declared or booted: no workers to stop
+	}
+	if queue, ok := info.Instance.(*Queue); ok {
+		queue.Shutdown()
+	}
+	return nil
+}

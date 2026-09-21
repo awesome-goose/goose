@@ -326,6 +326,11 @@ func (c *Cron) Start(ctx context.Context, handlers []*CronHandler) error {
 	}
 }
 
+// IsRunning reports whether the cron runner has been started and not yet stopped.
+func (c *Cron) IsRunning() bool {
+	return c.isRunning.Load()
+}
+
 // Stop stops the cron runner gracefully
 func (c *Cron) Stop() {
 	c.mu.Lock()

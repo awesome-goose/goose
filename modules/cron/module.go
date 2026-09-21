@@ -94,3 +94,17 @@ func (m *cronModule) Boot(k types.Kernel) error {
 
 	return nil
 }
+
+// Shutdown implements types.Shutdownable: on kernel shutdown it stops the cron
+// runner and waits for the jobs it is running, instead of leaving it ticking
+// after the kernel has gone.
+func (m *cronModule) Shutdown(k types.Kernel) error {
+	info, err := k.Registry().Get(&Cron{})
+	if err != nil {
+		return nil // the service was never declared or booted: nothing to stop
+	}
+	if cronService, ok := info.Instance.(*Cron); ok {
+		cronService.Stop()
+	}
+	return nil
+}

@@ -3,6 +3,7 @@ package tests
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/awesome-goose/goose/core"
 	"github.com/awesome-goose/goose/log"
@@ -97,4 +98,52 @@ func (s *CronModuleBootSuite) TestBootResolvesCronServiceViaRegistry() {
 		return fn(k)
 	})
 	s.T.Expect(err).ToBeNil()
+}
+
+func TestCronModuleShutdown(t *testing.T) {
+	test.NewSuiteRunner(t, &CronModuleShutdownSuite{}).Run()
+}
+
+type CronModuleShutdownSuite struct {
+	test.Suite
+}
+
+// The kernel runs every Shutdownable module's hook on shutdown, but the cron
+// module implemented none, so its runner kept ticking after the kernel had shut
+// down.
+func (s *CronModuleShutdownSuite) TestKernelShutdownStopsTheRunner() {
+	handlers := []*cron.CronHandler{
+		cron.NewSimpleHandler("test", "job", "* * * * *", func(job *cron.CronJob) (any, error) {
+			return nil, nil
+		}),
+	}
+	root := &cronTestModule{handlers: handlers, dbPath: filepath.Join(s.T.T().TempDir(), "cron-shutdown.db")}
+
+	traverser := core.NewTraverser()
+	s.T.Require(traverser.Container().Register(func() types.Log {
+		return log.NewLog(log.AppLogChannel(""))
+	}, "", true)).ToBeNil()
+	s.T.Require(traverser.Traverse(root)).ToBeNil()
+
+	k := &fakeKernel{traverser: traverser}
+	s.T.Require(traverser.OnBootHooks().ExecuteAll(func(fn func(types.Kernel) error) error {
+		return fn(k)
+	})).ToBeNil()
+
+	info, err := k.Registry().Get(&cron.Cron{})
+	s.T.Require(err).ToBeNil()
+	runner := info.Instance.(*cron.Cron)
+
+	// The runner starts on its own goroutine; wait until it is up.
+	deadline := time.Now().Add(5 * time.Second)
+	for !runner.IsRunning() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	s.T.Require(runner.IsRunning()).ToEqual(true)
+
+	s.T.Require(traverser.OnShutdownHooks().ExecuteAll(func(fn func(types.Kernel) error) error {
+		return fn(k)
+	})).ToBeNil()
+
+	s.T.Expect(runner.IsRunning()).ToEqual(false)
 }

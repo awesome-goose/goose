@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/awesome-goose/goose/core"
 	"github.com/awesome-goose/goose/log"
@@ -75,4 +76,52 @@ func (s *QueuesModuleBootSuite) TestBootResolvesQueueServiceViaRegistry() {
 		return fn(k)
 	})
 	s.T.Expect(err).ToBeNil()
+}
+
+func TestQueuesModuleShutdown(t *testing.T) {
+	test.NewSuiteRunner(t, &QueuesModuleShutdownSuite{}).Run()
+}
+
+type QueuesModuleShutdownSuite struct {
+	test.Suite
+}
+
+// The kernel runs every Shutdownable module's hook on shutdown, but the queues
+// module implemented none, so its workers kept polling after the kernel had shut
+// down (a worker process could not stop them, and jobs in flight were abandoned).
+func (s *QueuesModuleShutdownSuite) TestKernelShutdownStopsTheWorkers() {
+	handlers := []*queues.JobHandler{
+		queues.NewHandler("test", "job", func(ctx context.Context, job *queues.QueueJob) (any, error) {
+			return nil, nil
+		}),
+	}
+	root := &queuesTestModule{handlers: handlers, dbPath: filepath.Join(s.T.T().TempDir(), "queues-shutdown.db")}
+
+	traverser := core.NewTraverser()
+	s.T.Require(traverser.Container().Register(func() types.Log {
+		return log.NewLog(log.AppLogChannel(""))
+	}, "", true)).ToBeNil()
+	s.T.Require(traverser.Traverse(root)).ToBeNil()
+
+	k := &fakeKernel{traverser: traverser}
+	s.T.Require(traverser.OnBootHooks().ExecuteAll(func(fn func(types.Kernel) error) error {
+		return fn(k)
+	})).ToBeNil()
+
+	info, err := k.Registry().Get(&queues.Queue{})
+	s.T.Require(err).ToBeNil()
+	queue := info.Instance.(*queues.Queue)
+
+	// Workers start on their own goroutines; wait until they are up.
+	deadline := time.Now().Add(5 * time.Second)
+	for queue.TotalActiveWorkers() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	s.T.Require(queue.TotalActiveWorkers() > 0).ToEqual(true)
+
+	s.T.Require(traverser.OnShutdownHooks().ExecuteAll(func(fn func(types.Kernel) error) error {
+		return fn(k)
+	})).ToBeNil()
+
+	s.T.Expect(queue.TotalActiveWorkers()).ToEqual(0)
 }
