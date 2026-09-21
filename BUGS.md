@@ -374,3 +374,73 @@ explicitly so nobody there relies on it.
 over the module's own declared entities, if that's the intended behavior) or
 remove the field/option entirely and let the compiler catch existing
 callers — a silently-ignored bool is worse than a missing one.
+
+---
+
+## 8. `modules/sql` built the Postgres DSN without quoting, so an empty password broke the connection — FIXED
+
+**File:** `modules/sql/module.go` (now `modules/sql/dsn.go`).
+
+The DSN was `fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%d sslmode=%s search_path=%s TimeZone=%s", ...)`
+with every value unquoted. In libpq keyword/value syntax an empty value followed by a space
+swallows the next token, so `password= dbname=app` makes the driver read `dbname=app` as the
+password and connect with an empty database name. The same string also failed TLS
+configuration on a blank `sslmode`, corrupted any value containing a space or quote, and gave an
+empty `Schema` the table prefix `"."` (`tablePrefix = Schema + "."`), so tables were named
+`.QueueJobs`.
+
+**Symptom:** with `Pass: ""` (the zero value, and the default in most configs) the app failed to
+boot with `database "<user>" does not exist`, naming the *user* where the database should be.
+Found 2026-09-21 running a serve/worker spike against a local trust-auth Postgres.
+
+**Fix applied:** `sql.PostgresDSN` single-quotes and escapes every value (`\` and `'`) and omits
+unset fields so the driver applies its defaults; `sql.PostgresSchema` defaults an empty schema to
+`public`. Tested by parsing the result with pgx's own `pgconn.ParseConfig` (`tests/sql_dsn_test.go`).
+The MySQL DSN was not reviewed.
+
+---
+
+## 9. `SuiteRunner` bound assertions to the parent test, so failures were attributed to the wrong test — FIXED
+
+**File:** `testing/suite.go`.
+
+`SuiteRunner.Run` starts one subtest per `Test*` method but left the suite's `T` bound to the
+parent `*testing.T`. A failed `Expect` failed the *parent* while the failing method reported `PASS`,
+and a failed `Require` called `FailNow` on the parent from the subtest's goroutine, which Go
+forbids (`subtest may have called FailNow on a parent test`) and which could abort or hang the
+run.
+
+**Symptom:** `go test -v` showed `--- PASS: TestX/TestFoo` under a `--- FAIL: TestX` whose log
+lines named `TestFoo`'s assertion; running one method by name looked green. The overall exit code
+was still correct, which is why it went unnoticed.
+
+**Fix applied:** the runner rebinds the suite to each subtest's `T` for the duration of the
+method and restores it afterwards. `tests/suite_runner_test.go` runs a deliberately failing
+fixture suite in a child process and checks each failure lands on its own method.
+
+---
+
+## 10. `queues` and `cron` had no shutdown hook, so kernel shutdown left their workers running — FIXED
+
+**Files:** `modules/queues/module.go`, `modules/cron/module.go`.
+
+The kernel runs the `Shutdown` hook of every `types.Shutdownable` module and declaration. Neither
+module implemented it, and `(*Queue).Shutdown()` has the wrong signature to be collected. Workers
+(and the cron ticker) started in `Boot` therefore kept running after the kernel had shut down, and
+a job in flight was abandoned. A worker process had to know to call `Queue.Shutdown` itself.
+
+**Symptom:** after `stop()` returned, `Queue.TotalActiveWorkers()` was still above zero.
+
+**Fix applied:** both modules implement `Shutdown(k)` and stop their service through the registry
+(`Queue.Shutdown` waits for jobs in flight; `Cron.Stop` waits for running jobs). Added
+`Cron.IsRunning()` so the runner's state can be observed. Tests: `TestKernelShutdownStopsTheWorkers`
+and `TestKernelShutdownStopsTheRunner`, each confirmed to fail with the hook removed.
+
+---
+
+## Not a bug, but easy to trip over
+
+- **Single-instance CLI apps take the raw argument list; multi-instance apps take `cli <command>`.**
+  With one CLI instance, `myapp worker` runs `worker`; `myapp cli worker` reports `ROUTE_NOT_FOUND`.
+  With `[SPA, CLI]`, `myapp cli worker` boots only the CLI instance. Both are intended.
+- **The SPA platform listens on `localhost` by default.** Set `spa.WithHost("0.0.0.0")` in a container.
