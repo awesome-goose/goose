@@ -52,6 +52,14 @@ func (r *SuiteRunner) Run() {
 		method := suiteType.Method(i)
 		if strings.HasPrefix(method.Name, "Test") {
 			r.t.Run(method.Name, func(t *testing.T) {
+				// Bind assertions to this subtest, not the parent: a failure must
+				// fail the method that made it, and Require's FailNow must run on
+				// the goroutine that owns its *testing.T.
+				if s, ok := r.suite.(Suiter); ok {
+					s.SetT(t)
+					defer s.SetT(r.t)
+				}
+
 				// Run setup test
 				if s, ok := r.suite.(SetupTestFunc); ok {
 					s.SetupTest()
