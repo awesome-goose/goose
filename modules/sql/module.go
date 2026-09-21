@@ -133,18 +133,8 @@ func (m *sqlModule) initialize(log types.Log) *Db {
 	case "postgres":
 		fallthrough
 	default:
-		dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%d sslmode=%s search_path=%s TimeZone=%s",
-			m.config.Host,
-			m.config.User,
-			m.config.Pass,
-			m.config.Name,
-			m.config.Port,
-			m.config.SSLMode,
-			m.config.Schema,
-			m.config.TimeZone,
-		)
-		dialector = postgres.Open(dsn)
-		tablePrefix = m.config.Schema + "."
+		dialector = postgres.Open(PostgresDSN(m.config))
+		tablePrefix = PostgresSchema(m.config) + "."
 	}
 
 	var logMod gormLogger.LogLevel = gormLogger.Warn
