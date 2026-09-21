@@ -34,6 +34,7 @@ type App struct {
 	server     *http.Server
 	apiPrefix  string
 	staticRoot string
+	handler    http.Handler
 }
 
 func NewApp(config *Config) *App {
@@ -49,7 +50,9 @@ func NewApp(config *Config) *App {
 		root = config.StaticDir
 	}
 
-	return &App{config: config, apiPrefix: prefix, staticRoot: root}
+	a := &App{config: config, apiPrefix: prefix, staticRoot: root}
+	a.handler = a.pipeline()
+	return a
 }
 
 // SetHandler sets the kernel handler. Run calls this automatically; it is
@@ -58,8 +61,13 @@ func (a *App) SetHandler(fn func(c types.Context) error) {
 	a.fn = fn
 }
 
-func (a *App) Run(fn func(c types.Context) error) error {
-	a.SetHandler(fn)
+// HTTPServer returns the configured http.Server without starting it. Run uses
+// it; a caller with its own listener (or a test that needs the real timeouts)
+// can Serve on it directly. The same server is returned on every call.
+func (a *App) HTTPServer() *http.Server {
+	if a.server != nil {
+		return a.server
+	}
 
 	// Calculate timeouts
 	readTimeout := DefaultReadTimeout
@@ -69,6 +77,9 @@ func (a *App) Run(fn func(c types.Context) error) error {
 		readTimeout = timeout
 		writeTimeout = timeout
 	}
+	if a.config.WriteTimeoutSet {
+		writeTimeout = a.config.WriteTimeout
+	}
 
 	a.server = &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", a.config.Host, a.config.Port),
@@ -77,6 +88,12 @@ func (a *App) Run(fn func(c types.Context) error) error {
 		WriteTimeout: writeTimeout,
 		IdleTimeout:  DefaultIdleTimeout,
 	}
+	return a.server
+}
+
+func (a *App) Run(fn func(c types.Context) error) error {
+	a.SetHandler(fn)
+	a.HTTPServer()
 
 	// Channel to signal server errors
 	errChan := make(chan error, 1)
@@ -112,7 +129,18 @@ func (a *App) Shutdown() error {
 	return a.server.Shutdown(ctx)
 }
 
+// ServeHTTP runs the request through the pipeline built from the platform's options.
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	a.handler.ServeHTTP(w, r)
+}
+
+// route sends a request to a mounted handler, the kernel (API prefix) or the static files.
+func (a *App) route(w http.ResponseWriter, r *http.Request) {
+	if h := a.mounted(r.URL.Path); h != nil {
+		h.ServeHTTP(w, r)
+		return
+	}
+
 	if p := r.URL.Path; p == a.apiPrefix || strings.HasPrefix(p, a.apiPrefix+"/") {
 		a.serveAPI(w, r)
 		return
@@ -154,6 +182,9 @@ func (a *App) serveStatic(w http.ResponseWriter, r *http.Request) {
 	fsPath := filepath.Join(a.staticRoot, filepath.FromSlash(upath))
 
 	if info, err := os.Stat(fsPath); err == nil && !info.IsDir() {
+		if a.config.Compression && a.servePrecompressed(w, r, fsPath) {
+			return
+		}
 		http.ServeFile(w, r, fsPath)
 		return
 	}

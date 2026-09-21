@@ -32,6 +32,9 @@ func (p *Platform) Name() string {
 }
 
 func (p *Platform) Boot(container types.Container) (types.App, error) {
+	if err := p.config.validate(); err != nil {
+		return nil, err
+	}
 	app := NewApp(p.config)
 
 	return app, nil
