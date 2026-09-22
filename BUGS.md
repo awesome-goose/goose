@@ -438,6 +438,61 @@ and `TestKernelShutdownStopsTheRunner`, each confirmed to fail with the hook rem
 
 ---
 
+## 11. Quoting the Postgres DSN's `TimeZone` value broke `gorm.io/driver/postgres` — FIXED
+
+**File:** `modules/sql/dsn.go` (`PostgresDSN`).
+
+Bug 8's fix quoted every DSN value, including `TimeZone`, to survive libpq's keyword/value
+parsing. But `gorm.io/driver/postgres.Initialize` re-parses the *raw* DSN a second time with its
+own regexp (`timeZoneMatcher = regexp.MustCompile("(time_zone|TimeZone)=(.*?)($|&| )")`) to pull
+`TimeZone` out as a startup runtime parameter — ahead of, and independently of, pgx's own (correct)
+DSN parsing. That regexp knows nothing about libpq quoting: it captures verbatim up to the next
+space/`&`, quote characters included, and hands Postgres literal `'UTC'` instead of `UTC`.
+
+**Symptom:** any app using `gorm.Open(postgres.Open(sql.PostgresDSN(c)), ...)` with a non-empty
+`TimeZone` failed to connect with `invalid value for parameter "TimeZone": "'UTC'"` (or
+`"'America/New_York'"`, etc.) — a regression introduced by Bug 8's own fix. Empty `TimeZone` was
+unaffected (omitted from the DSN entirely). Found 2026-09-22 writing an M0-23 verification test
+against a real `gorm.Open` connection, not just pgx's `pgconn.ParseConfig` (which never exercises
+gorm's second parser and so never caught this).
+
+**Fix applied:** `TimeZone` is left unquoted in the DSN (with a defensive guard skipping any value
+containing a quote, space, or `&`, which no valid IANA zone name does anyway). Every other value
+stays quoted per Bug 8. Regression test: `tests/sql_dsn_gorm_test.go`, run against a real Postgres
+via `gorm.Open` (not a mock) — confirmed it fails identically to the real-world symptom against the
+unfixed code and passes after. `tests/sql_dsn_test.go` (pgx-level, from Bug 8) rerun unchanged, no
+regression there.
+
+---
+
+## 12. `env`'s `.env` file source overrode real OS environment variables — FIXED
+
+**File:** `env/sources/file.go` (`fileEnvSource.Load`).
+
+`core/services.go` registers `env.NewEnv()` as a default service on every kernel boot, and
+`env.NewEnv()` loads `NewOsEnvSource()` then `NewFileEnvSource()` in that order. `Load` called
+`os.Setenv(key, value)` unconditionally for every key found in `.env`, with no check for whether
+the real OS environment already defined it — so a `.env` file's value always won over a real
+environment variable, backwards from standard dotenv convention (the file exists to *fill in* what
+the environment doesn't already set, not to override it).
+
+**Symptom:** any app relying on real environment variables (injected by Kubernetes, a CI secret, a
+deployment platform, or a developer's shell) to override a checked-in or accidentally-deployed
+`.env` file got silently overridden by the file instead — a genuine correctness and security
+concern (a stale or example `.env` shipped alongside a binary can clobber a production secret pulled
+from the real environment). Found 2026-09-22 writing an M0-23 verification test: `os.Setenv`
+overrides set immediately before booting a goose kernel were clobbered by the real `.env`'s values
+before `rootSQLConfig()` read them.
+
+**Fix applied:** `Load` now checks `os.LookupEnv(key)` before setting anything, and skips the
+file's value whenever the key is already present in the real environment — including when it's
+explicitly set to `""`, since that's a deliberate choice (e.g. "disable this"), not an absence, and
+must not be filled in either. Regression test: `tests/env_file_source_test.go`, covering all four
+cases (real env wins, file fills in what's unset, explicit empty real value isn't overridden,
+missing `.env` file is silently ignored as before).
+
+---
+
 ## Not a bug, but easy to trip over
 
 - **Single-instance CLI apps take the raw argument list; multi-instance apps take `cli <command>`.**
