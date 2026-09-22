@@ -493,6 +493,45 @@ missing `.env` file is silently ignored as before).
 
 ---
 
+## 13. `web`/`api`/`spa` platforms mapped every kernel error to HTTP 500, including "route not found" — FIXED
+
+**Files:** `platforms/web/app.go`, `platforms/api/app.go`, `platforms/spa/app.go` (all `App.ServeHTTP`/
+`serveAPI`).
+
+Each platform's HTTP entry point ran the request through the kernel handler and, on any non-nil
+error, wrote `http.StatusInternalServerError` unconditionally:
+
+```go
+err := a.fn(ctx)
+if err != nil {
+    http.Error(w, err.Error(), http.StatusInternalServerError)
+    return
+}
+```
+
+`core/router.go` returns `errors.ErrRouteNotFound` for any request path with no matching route —
+the one kernel error a client can trigger simply by asking for something that was never mounted, or
+was unmounted on purpose. That got the same 500 as an actual internal fault, indistinguishable to a
+caller (or a test asserting "removed routes 404").
+
+**Symptom:** `GET /api/apps/<name>` for an app deliberately unmounted from `router.Mount` returned
+`500 Internal Server Error` with body `ROUTE_NOT_FOUND: Route not found (...)`, not `404 Not Found`.
+Found 2026-09-22 verifying an Origine PLAN task ("unmount six apps; done: removed routes return
+404") with a real end-to-end boot test — a stub/mock handler test wouldn't have caught this, since
+the mismapping lives in the platform's own error-to-status translation, not routing itself.
+
+**Fix applied:** each platform now maps `errors.ErrRouteNotFound` (checked via `stderrors.Is`) to
+`http.StatusNotFound`; every other kernel error keeps the prior `http.StatusInternalServerError`
+behavior unchanged — this is deliberately narrow, not a general error-code-to-HTTP-status mapping,
+since most of the ~100 other built-in error codes represent boot-time misconfiguration never meant
+to reach a live request. `web` and `api` gained an exported `SetHandler` (mirroring `spa`'s existing
+one) so tests can drive `ServeHTTP` directly without a live listener. Regression tests:
+`tests/web_platform_test.go`, `tests/api_platform_test.go`, and two new cases in
+`tests/spa_platform_test.go` (`TestAPIRouteNotFoundIs404`, `TestAPIOtherErrorsStayInternalServerError`)
+— each confirmed to fail (500 instead of 404) against the unfixed code.
+
+---
+
 ## Not a bug, but easy to trip over
 
 - **Single-instance CLI apps take the raw argument list; multi-instance apps take `cli <command>`.**
