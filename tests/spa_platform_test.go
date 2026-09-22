@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/awesome-goose/goose"
+	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/platforms/spa"
 	test "github.com/awesome-goose/goose/testing"
 	"github.com/awesome-goose/goose/types"
@@ -46,6 +47,18 @@ func (s *SpaPlatformSuite) SetupTest() {
 // newApp builds a booted spa.App with an echo handler that records the
 // method and paths the kernel handler would see.
 func (s *SpaPlatformSuite) newApp(options ...spa.Option) *spa.App {
+	return s.newAppWithHandler(func(c types.Context) error {
+		s.seen.method = string(c.Request().Method())
+		s.seen.paths = c.Request().Paths()
+		body := "METHOD=" + s.seen.method + " PATHS=" + strings.Join(s.seen.paths, ",")
+		return c.Response().Write(types.SerialTypeString, []byte(body), 200)
+	}, options...)
+}
+
+// newAppWithHandler builds a booted spa.App with a caller-supplied handler,
+// for tests that need to control exactly what the kernel handler returns
+// (e.g. simulating errors.ErrRouteNotFound without a real route table).
+func (s *SpaPlatformSuite) newAppWithHandler(handler func(c types.Context) error, options ...spa.Option) *spa.App {
 	options = append([]spa.Option{spa.WithStaticDir(s.staticDir)}, options...)
 	platform := spa.NewPlatform(options...)
 
@@ -53,12 +66,7 @@ func (s *SpaPlatformSuite) newApp(options ...spa.Option) *spa.App {
 	s.T.Expect(err).ToBeNil()
 
 	app := booted.(*spa.App)
-	app.SetHandler(func(c types.Context) error {
-		s.seen.method = string(c.Request().Method())
-		s.seen.paths = c.Request().Paths()
-		body := "METHOD=" + s.seen.method + " PATHS=" + strings.Join(s.seen.paths, ",")
-		return c.Response().Write(types.SerialTypeString, []byte(body), 200)
-	})
+	app.SetHandler(handler)
 
 	return app
 }
@@ -104,6 +112,29 @@ func (s *SpaPlatformSuite) TestAPIRequestStripsPrefix() {
 
 	res := h.GET("/api/users/42").Do().ExpectOK()
 	s.T.Expect(res.BodyString()).ToEqual("METHOD=GET PATHS=users,42")
+}
+
+// serveAPI hard-mapped every error the kernel handler returned to 500,
+// including errors.ErrRouteNotFound — the exact error core/router.go returns
+// for a path with no matching route. A client hitting an unmounted or
+// never-existed API route got "500 Internal Server Error" instead of 404,
+// indistinguishable from a real server fault.
+func (s *SpaPlatformSuite) TestAPIRouteNotFoundIs404() {
+	h := test.NewHTTPTest(s.T.T(), s.newAppWithHandler(func(c types.Context) error {
+		return errors.ErrRouteNotFound.WithMeta(map[string]any{"method": "GET", "path": "nope"})
+	}))
+
+	h.GET("/api/nope").Do().ExpectStatus(404)
+}
+
+// Every other kernel error keeps its prior behavior: a genuine internal
+// fault still surfaces as 500, not silently swallowed or reclassified.
+func (s *SpaPlatformSuite) TestAPIOtherErrorsStayInternalServerError() {
+	h := test.NewHTTPTest(s.T.T(), s.newAppWithHandler(func(c types.Context) error {
+		return errors.ErrRuntimeError.WithError(nil)
+	}))
+
+	h.GET("/api/boom").Do().ExpectStatus(500)
 }
 
 func (s *SpaPlatformSuite) TestAPIRootMapsToRootRoute() {

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/types"
 )
 
@@ -34,8 +36,14 @@ func NewApp(config *Config) *App {
 	return &App{config: config}
 }
 
-func (a *App) Run(fn func(c types.Context) error) error {
+// SetHandler sets the kernel handler. Run calls this automatically; it is
+// exported so tests can exercise ServeHTTP without starting a server.
+func (a *App) SetHandler(fn func(c types.Context) error) {
 	a.fn = fn
+}
+
+func (a *App) Run(fn func(c types.Context) error) error {
+	a.SetHandler(fn)
 
 	// Calculate timeouts
 	readTimeout := DefaultReadTimeout
@@ -92,7 +100,20 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := NewContext(w, r)
 	err := a.fn(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), statusFor(err))
 		return
 	}
+}
+
+// statusFor maps a kernel error to the HTTP status a caller should see.
+// errors.ErrRouteNotFound — what core/router.go returns for a path with no
+// matching route — is the one kernel error a live request can trigger simply
+// by asking for something that doesn't exist, so it maps to 404. Every other
+// error here represents an actual fault (a failed handler, a DI/config
+// problem that slipped past boot) and stays 500, unchanged from before.
+func statusFor(err error) int {
+	if stderrors.Is(err, errors.ErrRouteNotFound) {
+		return http.StatusNotFound
+	}
+	return http.StatusInternalServerError
 }

@@ -2,6 +2,7 @@ package spa
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/platforms/api"
 	"github.com/awesome-goose/goose/types"
 )
@@ -171,8 +173,21 @@ func (a *App) serveAPI(w http.ResponseWriter, r *http.Request) {
 
 	ctx := api.NewContext(w, r2)
 	if err := a.fn(ctx); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), statusFor(err))
 	}
+}
+
+// statusFor maps a kernel error to the HTTP status a caller should see.
+// errors.ErrRouteNotFound — what core/router.go returns for a path with no
+// matching route — is the one kernel error a live request can trigger simply
+// by asking for something that doesn't exist, so it maps to 404. Every other
+// error here represents an actual fault (a failed handler, a DI/config
+// problem that slipped past boot) and stays 500, unchanged from before.
+func statusFor(err error) int {
+	if stderrors.Is(err, errors.ErrRouteNotFound) {
+		return http.StatusNotFound
+	}
+	return http.StatusInternalServerError
 }
 
 func (a *App) serveStatic(w http.ResponseWriter, r *http.Request) {
