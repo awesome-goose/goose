@@ -10,9 +10,21 @@ const defaultPostgresSchema = "public"
 
 // PostgresDSN returns the libpq keyword/value connection string for config.
 //
-// Every value is single-quoted and escaped, so an empty, spaced or quoted value
-// (a blank password, `p ss'word`) cannot run into the next key. Fields that are
-// unset are left out so the driver applies its own defaults.
+// Every value except TimeZone is single-quoted and escaped, so an empty,
+// spaced or quoted value (a blank password, `p ss'word`) cannot run into the
+// next key. Fields that are unset are left out so the driver applies its own
+// defaults.
+//
+// TimeZone is deliberately NOT quoted: gorm.io/driver/postgres.Initialize
+// re-parses the raw DSN with its own regexp (`timeZoneMatcher`) to pull
+// TimeZone out as a startup runtime parameter, ahead of and separately from
+// pgx's own (correct) DSN parsing, and that regexp knows nothing about libpq
+// quoting — it captures everything up to the next space or `&` verbatim, quote
+// characters included, which Postgres then rejects outright ("invalid value
+// for parameter TimeZone"). No valid IANA zone name contains a quote, space or
+// `&`, so leaving it unquoted is safe; a value that did contain one is skipped
+// rather than sent, since gorm's regexp would silently truncate it at that
+// character either way.
 func PostgresDSN(c *Config) string {
 	var parts []string
 	add := func(key, value string) {
@@ -30,7 +42,9 @@ func PostgresDSN(c *Config) string {
 	}
 	add("sslmode", c.SSLMode)
 	add("search_path", PostgresSchema(c))
-	add("TimeZone", c.TimeZone)
+	if tz := c.TimeZone; tz != "" && !strings.ContainsAny(tz, " '\"&") {
+		parts = append(parts, "TimeZone="+tz)
+	}
 
 	return strings.Join(parts, " ")
 }
