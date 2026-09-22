@@ -50,8 +50,7 @@ func (v *fileEnvSource) Load(env types.Env) {
 					pendingValue = pendingValue[:len(pendingValue)-1] // remove closing quote
 					inMultiline = false
 					pendingValue = expandVars(pendingValue, env)
-					env.Set(pendingKey, pendingValue)
-					os.Setenv(pendingKey, pendingValue)
+					setFromFile(env, pendingKey, pendingValue)
 					pendingKey, pendingValue = "", ""
 				}
 				continue
@@ -60,8 +59,7 @@ func (v *fileEnvSource) Load(env types.Env) {
 			if !strings.HasSuffix(trimmed, "\\") {
 				inMultiline = false
 				pendingValue = expandVars(pendingValue, env)
-				env.Set(pendingKey, pendingValue)
-				os.Setenv(pendingKey, pendingValue)
+				setFromFile(env, pendingKey, pendingValue)
 				pendingKey, pendingValue = "", ""
 			}
 			continue
@@ -130,9 +128,22 @@ func (v *fileEnvSource) Load(env types.Env) {
 		}
 
 		value = expandVars(value, env)
-		env.Set(key, value)
-		os.Setenv(key, value)
+		setFromFile(env, key, value)
 	}
+}
+
+// setFromFile stores a value read from the .env file, but only when the real
+// OS environment does not already define key. A real environment variable —
+// set by a deployment platform, CI secret, or a developer's shell — always
+// wins over the file, even when it is explicitly set to "": os.LookupEnv
+// reports that as present, so a deliberate "disable this" is never treated as
+// an absence for the file to fill in.
+func setFromFile(env types.Env, key, value string) {
+	if _, had := os.LookupEnv(key); had {
+		return
+	}
+	env.Set(key, value)
+	os.Setenv(key, value)
 }
 
 // unescapeValue handles common escape sequences in double-quoted values
