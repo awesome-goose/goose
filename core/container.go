@@ -449,6 +449,25 @@ func (c *Container) Create(value any) (any, error) {
 	return ptrV.Interface(), nil
 }
 
+// bindInstance registers an already-constructed, already-injected instance
+// as the canonical singleton for t (a pointer-to-struct type). Called by
+// Registry.processModule right after it creates a declaration's instance, so
+// that a later Create call for the same type — by pointer (the declaration-
+// time shape) or by the bare struct value goose's own router uses for
+// []any{SomeController{}, "Method"} handlers — resolves to this exact
+// instance instead of silently allocating and injecting a fresh, un-Booted
+// copy. Without this, Boot() hooks that wire state onto a declaration field
+// (an OAuth registry, a lazily-constructed service, ...) run once on an
+// instance nothing ever serves a request with.
+func (c *Container) bindInstance(t reflect.Type, instance any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.bindings[t]; !exists {
+		c.bindings[t] = make(map[string]binding)
+	}
+	c.bindings[t][""] = binding{instance: instance}
+}
+
 // Reset deletes all the existing bindings and empties the container instance.
 func (c *Container) Reset() {
 	c.mu.Lock()

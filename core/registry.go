@@ -229,6 +229,13 @@ func (r *Registry) processModule(mod types.Module) error {
 			return err
 		}
 
+		// Bind this exact instance as the type's singleton so a later
+		// Create — by pointer or by the bare struct value goose's router
+		// uses for []any{SomeController{}, "Method"} handlers — resolves to
+		// it rather than allocating a fresh, un-Booted copy (see
+		// bindInstance's doc comment).
+		r.container.bindInstance(declType, instance)
+
 		info := &types.DeclarationInfo{
 			Instance: instance,
 			Type:     declType,
