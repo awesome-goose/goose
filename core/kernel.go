@@ -1,11 +1,14 @@
 package core
 
 import (
+	"bytes"
+	"net/http"
 	"os"
 	"os/signal"
 	"reflect"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/io/input"
@@ -294,6 +297,10 @@ func (k *kernel) createHandler() func(context types.Context) error {
 			context.Response().SetHeader("Content-Type", contentType)
 		}
 
+		if streamOutput, ok := output.(types.StreamOutput); ok {
+			return k.writeStream(context, streamOutput)
+		}
+
 		serialType, buf, err := k.serializer.Serialize(output.Data())
 		if err != nil {
 			return err
@@ -301,6 +308,46 @@ func (k *kernel) createHandler() func(context types.Context) error {
 
 		return context.Response().Write(serialType, buf, output.Code())
 	}
+}
+
+// writeStream serves a types.StreamOutput (U-G2): on an HTTP platform (any
+// Response whose Raw() is an http.ResponseWriter — spa, api, web), it clears
+// the write deadline the same way the F2 fix already does for a single
+// response (a stream must be able to outlive a fixed WriteTimeout) and
+// flushes after every chunk so the client sees it immediately rather than
+// buffered until the connection closes. Headers/Content-Type are already set
+// on context.Response() by createHandler before this runs.
+//
+// On a non-HTTP platform (Raw() isn't an http.ResponseWriter — e.g. CLI),
+// there is no live connection to flush incrementally against, so the
+// callback's output is buffered and written once via the normal Response
+// .Write path — the handler still works, just without the incremental
+// delivery that only makes sense over a real connection.
+func (k *kernel) writeStream(context types.Context, output types.StreamOutput) error {
+	raw, isHTTP := context.Response().Raw().(http.ResponseWriter)
+	if !isHTTP {
+		var buf bytes.Buffer
+		if err := output.StreamCallback()(func(chunk []byte) error {
+			_, err := buf.Write(chunk)
+			return err
+		}); err != nil {
+			return err
+		}
+		return context.Response().Write(types.SerialTypeBinary, buf.Bytes(), output.Code())
+	}
+
+	rc := http.NewResponseController(raw)
+	_ = rc.SetWriteDeadline(time.Time{}) // F2: a stream must outlive any fixed WriteTimeout
+	raw.WriteHeader(output.Code())
+	return output.StreamCallback()(func(chunk []byte) error {
+		if _, err := raw.Write(chunk); err != nil {
+			return err
+		}
+		if err := rc.Flush(); err != nil && err != http.ErrNotSupported {
+			return err
+		}
+		return nil
+	})
 }
 
 // shutdown gracefully shuts down all running apps
