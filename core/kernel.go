@@ -65,7 +65,9 @@ func (k *kernel) runSingle(inst *types.Instance) (func() error, error) {
 
 	container := k.traverser.Container()
 	for _, fn := range services {
-		container.Register(fn, "", true)
+		if err := container.Register(fn, "", true); err != nil {
+			return stop, errors.ErrServiceRegistrationError.WithError(err)
+		}
 	}
 
 	for _, initFn := range inst.Initializers {
@@ -163,7 +165,9 @@ func (k *kernel) runCLI(inst *types.Instance) (func() error, error) {
 
 	container := childKernel.traverser.Container()
 	for _, fn := range services {
-		container.Register(fn, "", true)
+		if err := container.Register(fn, "", true); err != nil {
+			return stop, errors.ErrServiceRegistrationError.WithError(err)
+		}
 	}
 
 	for _, initFn := range inst.Initializers {
@@ -216,7 +220,10 @@ func (k *kernel) runServers(instances []*types.Instance) (func() error, error) {
 
 			container := childKernel.traverser.Container()
 			for _, fn := range services {
-				container.Register(fn, "", true)
+				if err := container.Register(fn, "", true); err != nil {
+					errChan <- errors.ErrServiceRegistrationError.WithError(err).WithMeta(inst.Name)
+					return
+				}
 			}
 
 			for _, initFn := range inst.Initializers {

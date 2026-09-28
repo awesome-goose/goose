@@ -57,6 +57,14 @@ type Registry struct {
 	// declarationIndex maps declaration type to its owning module (for Get)
 	declarationIndex map[reflect.Type]*types.DeclarationInfo
 
+	// moduleImports caches each module's Imports() result, computed exactly
+	// once per module instance during topologicalSort. processModule reads
+	// from here instead of calling mod.Imports() again — Imports() is not
+	// guaranteed side-effect-free (e.g. a module that mutates package-level
+	// state as it builds its import list), so calling it twice per module
+	// can double-apply those side effects.
+	moduleImports map[types.Module][]types.Module
+
 	mu sync.RWMutex
 }
 
@@ -71,6 +79,7 @@ func NewRegistry(container *Container) *Registry {
 		moduleRegistry:     make(map[types.Module]*resolvedModule),
 		globalDeclarations: make(map[reflect.Type]*types.DeclarationInfo),
 		declarationIndex:   make(map[reflect.Type]*types.DeclarationInfo),
+		moduleImports:      make(map[types.Module][]types.Module),
 	}
 }
 
@@ -151,8 +160,13 @@ func (r *Registry) topologicalSort(root types.Module) ([]types.Module, error) {
 			return errors.ErrInstanceNotModule
 		}
 
+		// Imports() is called exactly once here per module instance, cached
+		// for processModule's later use — see the moduleImports field comment.
+		imports := mod.Imports()
+		r.moduleImports[mod] = imports
+
 		// Visit all imports first (dependencies)
-		for _, imp := range mod.Imports() {
+		for _, imp := range imports {
 			if err := visit(imp); err != nil {
 				return err
 			}
@@ -265,8 +279,10 @@ func (r *Registry) processModule(mod types.Module) error {
 		rm.exports[expType] = rm.ownDeclarations[expType]
 	}
 
-	// Collect imported declarations from imported modules' exports
-	for _, imp := range mod.Imports() {
+	// Collect imported declarations from imported modules' exports. Reads
+	// the cache populated by topologicalSort rather than calling
+	// mod.Imports() again — see the moduleImports field comment.
+	for _, imp := range r.moduleImports[mod] {
 		if importedMod, exists := r.moduleRegistry[imp]; exists {
 			for expType, expInfo := range importedMod.exports {
 				rm.importedDeclarations[expType] = expInfo

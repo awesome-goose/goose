@@ -338,6 +338,12 @@ var (
 		"An error occurred during runtime",
 		"Check application logs for details",
 	)
+	ErrServiceRegistrationError = New(
+		"SERVICE_REGISTRATION_ERROR",
+		"Service registration error",
+		"A default service failed to register with the container",
+		"Check the default service constructors in core/services.go for unresolvable arguments",
+	)
 	ErrInvalidHandlerFormat = New(
 		"INVALID_HANDLER_FORMAT",
 		"Invalid handler format",
