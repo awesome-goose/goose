@@ -76,13 +76,19 @@ func (s *StreamOutputSuite) TestSSE_DeliversAllEventsInOrder_PastAFixedWriteTime
 	// goose.Start blocks on the platform's ListenAndServe for as long as the
 	// server runs, so it must be started in a goroutine — mirrors
 	// cloud/server/unmount_test.go's established pattern for the same
-	// reason. Stopping it later means sending the process the SIGTERM its
-	// own signal handler (registered inside kernel.runSingle) already
-	// listens for, not calling a returned stop func (there isn't one yet
-	// when the server is still running).
+	// reason. Stopping it means sending the process the SIGTERM its own
+	// signal handler (registered inside kernel.runSingle) already listens
+	// for; the returned stop func only becomes available once Start itself
+	// returns (i.e. after that SIGTERM already unblocked it), so it's
+	// captured here and called in the cleanup below purely to run the
+	// kernel's own shutdown/reset — see kernel_introspection_test.go's
+	// comment for why that matters once more than one test in this package
+	// calls goose.Start.
+	stopCh := make(chan func() error, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := goose.Start(goose.SPA(platform, &streamOutputModule{}, nil))
+		stop, err := goose.Start(goose.SPA(platform, &streamOutputModule{}, nil))
+		stopCh <- stop
 		errCh <- err
 	}()
 	defer func() {
@@ -91,6 +97,11 @@ func (s *StreamOutputSuite) TestSSE_DeliversAllEventsInOrder_PastAFixedWriteTime
 		case <-errCh:
 		case <-time.After(5 * time.Second):
 			s.T.T().Log("server did not shut down within 5s of SIGTERM")
+		}
+		select {
+		case stop := <-stopCh:
+			_ = stop()
+		default:
 		}
 	}()
 

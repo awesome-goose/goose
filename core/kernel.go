@@ -26,7 +26,14 @@ type kernel struct {
 	runningApps  []types.App
 	childKernels []*kernel
 	mu           sync.Mutex
-	shutdownOnce sync.Once
+	// shutdownOnce is a pointer so shutdown() can swap in a fresh one once a
+	// cycle finishes (see the reset at the end of shutdown()) — a plain
+	// sync.Once value would only ever run its Do body once for this
+	// kernel's whole lifetime, which is fine for the single Start() per
+	// process every caller used to do, but not for a kernel Start()ed more
+	// than once (e.g. a test binary with more than one test that each boot
+	// their own server on the same *kernel).
+	shutdownOnce *sync.Once
 }
 
 func NewKernel() *kernel {
@@ -37,6 +44,7 @@ func NewKernel() *kernel {
 		traverser:    NewTraverser(),
 		runningApps:  make([]types.App, 0),
 		childKernels: make([]*kernel, 0),
+		shutdownOnce: &sync.Once{},
 	}
 }
 
@@ -384,6 +392,28 @@ func (k *kernel) shutdown() error {
 				return fn(child)
 			})
 		}
+
+		// Reset mutable state back to what NewKernel() produces. Before
+		// this, routes and the traverser's boot-hook/declaration graph
+		// persisted on the kernel forever: a second Start() on the same
+		// kernel (any test binary with more than one test that each boot a
+		// server, e.g. cloud/server's own suite gaining a second such test)
+		// re-ran every prior Start's boot hooks on top of the new one's —
+		// traverser.collectHooks() only dedupes *within* a single
+		// Traverse() call — which re-registered the same routes a second
+		// time. AppendRoutes correctly rejects that as a genuine duplicate
+		// (same method+path, both with a real handler), so the second
+		// Start failed outright with DUPLICATE_ROUTE. shutdownOnce is
+		// swapped for a fresh one too, or this reset would itself only
+		// ever run once per kernel.
+		k.mu.Lock()
+		k.routes = []types.Route{}
+		k.router = NewRouter()
+		k.traverser = NewTraverser()
+		k.runningApps = make([]types.App, 0)
+		k.childKernels = make([]*kernel, 0)
+		k.mu.Unlock()
+		k.shutdownOnce = &sync.Once{}
 	})
 	return shutdownErr
 }

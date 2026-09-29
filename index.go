@@ -7,6 +7,17 @@ import (
 
 var defaultKernel = core.NewKernel()
 
+// Kernel returns the package-level kernel Start boots onto. Route
+// introspection (types.Kernel.Routes()) was previously unreachable from a
+// consumer entirely — Start returns only a stop func — which blocked any
+// tooling built on the live route table: an IDOR test harness that needs to
+// replay every registered route (PLAN M1-09), or the OpenAPI emitter U-G3
+// plans to build from it. Call it any time after Start returns; Routes()
+// reflects whatever has booted by then.
+func Kernel() types.Kernel {
+	return defaultKernel
+}
+
 // Start starts one or more platform instances
 // - Single instance: runs directly
 // - Multiple instances: API/Web run concurrently, CLI runs when `cli` arg is passed
