@@ -14,15 +14,33 @@ import (
 // "/" must be exploded into nested Children — a single Route at Path
 // "apps/identity" would otherwise never match a URL like /apps/identity/...
 // because no single URL segment equals "apps/identity".
-func wrapWithPrefix(prefix string, routes types.Routes) types.Routes {
+//
+// middlewares, if given, are attached to the innermost wrapping node — the
+// one immediately above `routes` itself ("identity" in the example above),
+// not the outermost one ("apps"). See Mount's doc comment for why: that
+// segment is the one guaranteed not to be shared with a sibling Mount call,
+// so it can't have its Middlewares silently dropped by AppendRoutes' merge.
+func wrapWithPrefix(prefix string, routes types.Routes, middlewares []types.Middleware) types.Routes {
 	trimmed := strings.Trim(prefix, "/")
 	if trimmed == "" {
-		return routes
+		if len(middlewares) == 0 {
+			return routes
+		}
+		out := make(types.Routes, len(routes))
+		for i, r := range routes {
+			r.Middlewares = appendMiddlewares(middlewares, r.Middlewares)
+			out[i] = r
+		}
+		return out
 	}
 	segments := strings.Split(trimmed, "/")
 	current := routes
 	for i := len(segments) - 1; i >= 0; i-- {
-		current = types.Routes{{Path: segments[i], Children: current}}
+		node := types.Route{Path: segments[i], Children: current}
+		if i == len(segments)-1 {
+			node.Middlewares = middlewares
+		}
+		current = types.Routes{node}
 	}
 	return current
 }
@@ -37,16 +55,18 @@ func wrapWithPrefix(prefix string, routes types.Routes) types.Routes {
 // expects the legacy Router shape) and types.Module + Bootable so it can be
 // included directly in another module's Imports().
 type staticRouter struct {
-	routes types.Routes
-	prefix string // optional — applied during Boot when non-empty
+	routes      types.Routes
+	prefix      string             // optional — applied during Boot when non-empty
+	middlewares []types.Middleware // optional — applied during Boot via Mount
 }
 
 // Routes returns the routes this module owns. When a prefix has been applied
 // (via Mount), the routes are wrapped in a chain of nested parent routes —
 // one Route per "/"-separated segment of the prefix — so the kernel's
-// segment-by-segment matcher can descend into them.
+// segment-by-segment matcher can descend into them, and any Mount-supplied
+// middlewares are attached to that chain (see wrapWithPrefix).
 func (s *staticRouter) Routes() (types.Routes, error) {
-	return wrapWithPrefix(s.prefix, s.routes), nil
+	return wrapWithPrefix(s.prefix, s.routes, s.middlewares), nil
 }
 
 // Imports returns no sub-modules: staticRouter is a leaf in the module tree.

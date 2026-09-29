@@ -9,8 +9,9 @@ import (
 // to one or more types.Router implementations that are resolved through the
 // DI registry at Boot time. Each ForRouters call returns a fresh instance.
 type dynamicRouters struct {
-	routers []types.Router
-	prefix  string // optional — applied during Boot when non-empty
+	routers     []types.Router
+	prefix      string             // optional — applied during Boot when non-empty
+	middlewares []types.Middleware // optional — applied during Boot via Mount
 }
 
 func (d *dynamicRouters) Imports() []types.Module { return nil }
@@ -48,7 +49,7 @@ func (d *dynamicRouters) Boot(k types.Kernel) error {
 			return err
 		}
 
-		routes = wrapWithPrefix(d.prefix, routes)
+		routes = wrapWithPrefix(d.prefix, routes, d.middlewares)
 
 		if _, err = k.AppendRoutes(routes...); err != nil {
 			return err
