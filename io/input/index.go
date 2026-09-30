@@ -75,6 +75,23 @@ func (i *Input) Populate(payload any) error {
 			continue
 		}
 
+		// raw:"body" hands over the request body exactly as received — for
+		// binary uploads, which are neither JSON nor form data. The field
+		// must be []byte or string.
+		if tag := field.Tag.Get("raw"); tag == "body" {
+			body, err := i.context.Request().Body()
+			if err != nil {
+				return err
+			}
+			switch {
+			case fieldValue.Kind() == reflect.Slice && fieldValue.Type().Elem().Kind() == reflect.Uint8:
+				fieldValue.SetBytes(body)
+			case fieldValue.Kind() == reflect.String:
+				fieldValue.SetString(string(body))
+			}
+			continue
+		}
+
 		// Check header tag
 		if tag := field.Tag.Get("header"); tag != "" {
 			if values, ok := headers[tag]; ok && len(values) > 0 {
