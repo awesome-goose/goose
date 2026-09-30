@@ -147,3 +147,88 @@ func (s *StreamContextSuite) TestStreamContext_CancelledOnShutdown_SoShutdownIsP
 		s.T.T().Fatal("stream handler was never released")
 	}
 }
+
+var slowEnded = make(chan error, 2)
+
+type slowModule struct{}
+
+func (m *slowModule) Imports() []types.Module { return nil }
+func (m *slowModule) Exports() []any          { return nil }
+func (m *slowModule) Declarations() []any     { return nil }
+
+func (m *slowModule) Boot(k types.Kernel) error {
+	_, err := k.AppendRoutes(types.Route{
+		Method: types.GET,
+		Path:   "flood",
+		Handler: func(p *streamTestParams) types.Output {
+			return output.StreamContext(func(ctx context.Context, write func([]byte) error) error {
+				chunk := make([]byte, 1<<20)
+				for ctx.Err() == nil {
+					if err := write(chunk); err != nil {
+						slowEnded <- err
+						return err
+					}
+				}
+				return nil
+			}, output.WithStreamWriteTimeout(300*time.Millisecond))
+		},
+	})
+	return err
+}
+
+func TestStreamSlowClient(t *testing.T) {
+	test.NewSuiteRunner(t, &StreamSlowSuite{}).Run()
+}
+
+type StreamSlowSuite struct{ test.Suite }
+
+// A client that connects and never reads must not pin its handler forever:
+// with a per-write timeout the blocked write fails and the handler returns
+// (PLAN M1-14 "slow-client drop"; TRD §6.1 "dropped after a bounded buffer
+// and reconnect with since"). Without one, a stalled TCP peer blocks the
+// write indefinitely and the stream's goroutine, DB poll loop and
+// per-workspace connection slot leak.
+func (s *StreamSlowSuite) TestStreamWriteTimeout_DropsAClientThatStopsReading() {
+	port := 18203
+	platform := spa.NewPlatform(
+		spa.WithStaticDir(s.T.T().TempDir()), spa.WithHost("127.0.0.1"),
+		spa.WithPort(port), spa.WithAPIPrefix("/api"),
+	)
+	stopCh := make(chan func() error, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		stop, err := goose.Start(goose.SPA(platform, &slowModule{}, nil))
+		stopCh <- stop
+		errCh <- err
+	}()
+	defer func() {
+		_ = syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+		select {
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+		}
+		select {
+		case stop := <-stopCh:
+			_ = stop()
+		default:
+		}
+	}()
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if resp, err := http.Get(base + "/api/nonexistent"); err == nil {
+			_ = resp.Body.Close()
+			break
+		}
+	}
+
+	resp, err := http.Get(base + "/api/flood") // headers arrive; body is never read
+	s.T.Expect(err).ToBeNil()
+	defer func() { _ = resp.Body.Close() }()
+
+	select {
+	case got := <-slowEnded:
+		s.T.Expect(got != nil).ToEqual(true)
+	case <-time.After(8 * time.Second):
+		s.T.T().Fatal("a client that stopped reading was never dropped")
+	}
+}

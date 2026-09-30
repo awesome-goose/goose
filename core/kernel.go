@@ -364,7 +364,14 @@ func (k *kernel) writeStream(context types.Context, output types.StreamOutput) e
 	rc := http.NewResponseController(raw)
 	_ = rc.SetWriteDeadline(time.Time{}) // F2: a stream must outlive any fixed WriteTimeout
 	raw.WriteHeader(output.Code())
+	var perWrite time.Duration
+	if wt, ok := output.(types.WriteTimeoutStreamOutput); ok {
+		perWrite = wt.StreamWriteTimeout()
+	}
 	write := func(chunk []byte) error {
+		if perWrite > 0 {
+			_ = rc.SetWriteDeadline(time.Now().Add(perWrite))
+		}
 		if _, err := raw.Write(chunk); err != nil {
 			return err
 		}

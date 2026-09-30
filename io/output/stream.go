@@ -3,6 +3,7 @@ package output
 import (
 	"context"
 	"net/http"
+	"time"
 )
 
 // StreamingOutput is a generic types.StreamOutput implementation — a
@@ -12,11 +13,12 @@ import (
 // Mirrors io/output/file.go's StreamDownloadOutput, minus the
 // file-download-specific FileOutput methods (Content-Disposition, etc).
 type StreamingOutput struct {
-	callback    func(write func([]byte) error) error
-	ctxCallback func(ctx context.Context, write func([]byte) error) error
-	code        int
-	headers     map[string]string
-	contentType string
+	callback     func(write func([]byte) error) error
+	ctxCallback  func(ctx context.Context, write func([]byte) error) error
+	code         int
+	headers      map[string]string
+	contentType  string
+	writeTimeout time.Duration
 }
 
 // StreamOption configures a StreamingOutput.
@@ -34,6 +36,13 @@ func WithStreamHeaders(headers map[string]string) StreamOption {
 			s.headers[k] = v
 		}
 	}
+}
+
+// WithStreamWriteTimeout bounds each write to the client: a write that cannot
+// complete within d (a peer that stopped reading) fails, ending the stream.
+// Unset means no bound.
+func WithStreamWriteTimeout(d time.Duration) StreamOption {
+	return func(s *StreamingOutput) { s.writeTimeout = d }
 }
 
 // WithStreamContentType overrides the content type (default: none — the
@@ -91,6 +100,9 @@ func (s *StreamingOutput) StreamCallback() func(write func([]byte) error) error 
 	}
 	return s.callback
 }
+
+// StreamWriteTimeout returns the per-write deadline (types.WriteTimeoutStreamOutput).
+func (s *StreamingOutput) StreamWriteTimeout() time.Duration { return s.writeTimeout }
 
 // StreamContextCallback returns the context-aware callback (types.ContextStreamOutput).
 // For a plain Stream it adapts the callback, ignoring ctx.

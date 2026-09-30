@@ -1,6 +1,9 @@
 package types
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Output is the base interface for all response types.
 // All handler methods should return an implementation of this interface.
@@ -45,6 +48,18 @@ type ContextStreamOutput interface {
 	StreamOutput
 	// StreamContextCallback is preferred over StreamCallback by the kernel.
 	StreamContextCallback() func(ctx context.Context, writer func([]byte) error) error
+}
+
+// WriteTimeoutStreamOutput is a StreamOutput that bounds every individual
+// write. A stream otherwise has NO write deadline (the kernel clears it so a
+// stream can outlive the platform's fixed WriteTimeout), which means a client
+// that stops reading blocks the handler's write — and everything the handler
+// holds — indefinitely. With a timeout the stalled write fails and the
+// handler can return.
+type WriteTimeoutStreamOutput interface {
+	StreamOutput
+	// StreamWriteTimeout is the per-write deadline; <= 0 means none.
+	StreamWriteTimeout() time.Duration
 }
 
 // RedirectOutput represents redirect responses.
