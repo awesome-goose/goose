@@ -1,6 +1,9 @@
 package output
 
-import "net/http"
+import (
+	"context"
+	"net/http"
+)
 
 // StreamingOutput is a generic types.StreamOutput implementation — a
 // handler returns one of these to have the kernel write the response body
@@ -10,6 +13,7 @@ import "net/http"
 // file-download-specific FileOutput methods (Content-Disposition, etc).
 type StreamingOutput struct {
 	callback    func(write func([]byte) error) error
+	ctxCallback func(ctx context.Context, write func([]byte) error) error
 	code        int
 	headers     map[string]string
 	contentType string
@@ -55,6 +59,15 @@ func Stream(callback func(write func([]byte) error) error, opts ...StreamOption)
 	return s
 }
 
+// StreamContext is Stream for a callback that needs to know when to stop: ctx
+// is cancelled when the client disconnects or the kernel starts shutting
+// down, even while the callback is blocked waiting and writing nothing.
+func StreamContext(callback func(ctx context.Context, write func([]byte) error) error, opts ...StreamOption) *StreamingOutput {
+	s := Stream(nil, opts...)
+	s.ctxCallback = callback
+	return s
+}
+
 // Data returns nil — streaming bypasses the normal serialize-then-write path.
 func (s *StreamingOutput) Data() any { return nil }
 
@@ -69,5 +82,21 @@ func (s *StreamingOutput) ContentType() string { return s.contentType }
 
 // StreamCallback returns the streaming callback (types.StreamOutput).
 func (s *StreamingOutput) StreamCallback() func(write func([]byte) error) error {
+	if s.ctxCallback != nil {
+		// Platforms/kernels that predate ContextStreamOutput: run without
+		// cancellation rather than not at all.
+		return func(write func([]byte) error) error {
+			return s.ctxCallback(context.Background(), write)
+		}
+	}
 	return s.callback
+}
+
+// StreamContextCallback returns the context-aware callback (types.ContextStreamOutput).
+// For a plain Stream it adapts the callback, ignoring ctx.
+func (s *StreamingOutput) StreamContextCallback() func(ctx context.Context, write func([]byte) error) error {
+	if s.ctxCallback != nil {
+		return s.ctxCallback
+	}
+	return func(_ context.Context, write func([]byte) error) error { return s.callback(write) }
 }

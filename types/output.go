@@ -1,5 +1,7 @@
 package types
 
+import "context"
+
 // Output is the base interface for all response types.
 // All handler methods should return an implementation of this interface.
 type Output interface {
@@ -30,6 +32,19 @@ type StreamOutput interface {
 	Output
 	// StreamCallback provides the callback function for streaming content
 	StreamCallback() func(writer func([]byte) error) error
+}
+
+// ContextStreamOutput is a StreamOutput whose callback also receives a
+// context the kernel cancels when the client disconnects or the kernel begins
+// shutting down. A long-lived stream that may sit idle (an event feed
+// between events) needs it: write errors only surface on the NEXT write, so
+// without a context an idle handler neither notices a dropped client nor can
+// be told to stop for a graceful shutdown (which would otherwise wait out the
+// platform's whole shutdown timeout for it).
+type ContextStreamOutput interface {
+	StreamOutput
+	// StreamContextCallback is preferred over StreamCallback by the kernel.
+	StreamContextCallback() func(ctx context.Context, writer func([]byte) error) error
 }
 
 // RedirectOutput represents redirect responses.

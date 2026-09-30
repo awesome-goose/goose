@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	gocontext "context"
 	"net/http"
 	"os"
 	"os/signal"
@@ -34,10 +35,17 @@ type kernel struct {
 	// than once (e.g. a test binary with more than one test that each boot
 	// their own server on the same *kernel).
 	shutdownOnce *sync.Once
+
+	// streamsCtx is cancelled at the very start of shutdown() so open
+	// streaming responses end BEFORE the HTTP servers are asked to drain —
+	// otherwise Server.Shutdown waits (up to the platform's shutdown
+	// timeout) for connections that have no reason to ever finish.
+	streamsCtx    gocontext.Context
+	cancelStreams gocontext.CancelFunc
 }
 
 func NewKernel() *kernel {
-	return &kernel{
+	k := &kernel{
 		router:       NewRouter(),
 		routes:       []types.Route{},
 		serializer:   NewSerializer(),
@@ -46,6 +54,8 @@ func NewKernel() *kernel {
 		childKernels: make([]*kernel, 0),
 		shutdownOnce: &sync.Once{},
 	}
+	k.streamsCtx, k.cancelStreams = gocontext.WithCancel(gocontext.Background())
+	return k
 }
 
 // Start starts one or more platform instances
@@ -354,7 +364,7 @@ func (k *kernel) writeStream(context types.Context, output types.StreamOutput) e
 	rc := http.NewResponseController(raw)
 	_ = rc.SetWriteDeadline(time.Time{}) // F2: a stream must outlive any fixed WriteTimeout
 	raw.WriteHeader(output.Code())
-	return output.StreamCallback()(func(chunk []byte) error {
+	write := func(chunk []byte) error {
 		if _, err := raw.Write(chunk); err != nil {
 			return err
 		}
@@ -362,7 +372,24 @@ func (k *kernel) writeStream(context types.Context, output types.StreamOutput) e
 			return err
 		}
 		return nil
-	})
+	}
+
+	if cs, ok := output.(types.ContextStreamOutput); ok {
+		// Cancelled on client disconnect (request context) or kernel shutdown.
+		parent := gocontext.Background()
+		if rq, ok := context.Request().(interface{ Context() gocontext.Context }); ok {
+			parent = rq.Context()
+		}
+		ctx, cancel := gocontext.WithCancel(parent)
+		defer cancel()
+		k.mu.Lock()
+		shutdown := k.streamsCtx
+		k.mu.Unlock()
+		stop := gocontext.AfterFunc(shutdown, cancel)
+		defer stop()
+		return cs.StreamContextCallback()(ctx, write)
+	}
+	return output.StreamCallback()(write)
 }
 
 // shutdown gracefully shuts down all running apps
@@ -370,9 +397,15 @@ func (k *kernel) shutdown() error {
 	var shutdownErr error
 	k.shutdownOnce.Do(func() {
 		k.mu.Lock()
+		cancelStreams := k.cancelStreams
 		apps := k.runningApps
 		childKernels := k.childKernels
 		k.mu.Unlock()
+
+		// End open streams first so the servers below can actually drain.
+		if cancelStreams != nil {
+			cancelStreams()
+		}
 
 		// Shutdown all apps
 		for _, app := range apps {
@@ -412,6 +445,7 @@ func (k *kernel) shutdown() error {
 		k.traverser = NewTraverser()
 		k.runningApps = make([]types.App, 0)
 		k.childKernels = make([]*kernel, 0)
+		k.streamsCtx, k.cancelStreams = gocontext.WithCancel(gocontext.Background())
 		k.mu.Unlock()
 		k.shutdownOnce = &sync.Once{}
 	})

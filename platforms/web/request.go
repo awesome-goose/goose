@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"io"
 	"net/http"
 
@@ -20,6 +21,12 @@ type Request struct {
 
 func NewRequest(raw *http.Request) *Request {
 	return &Request{raw: raw}
+}
+
+// Context returns the underlying HTTP request's context, cancelled when the
+// client disconnects. The kernel uses it to stop streaming handlers.
+func (r *Request) Context() context.Context {
+	return r.raw.Context()
 }
 
 func (r *Request) Headers() map[string][]string {

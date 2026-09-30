@@ -4,6 +4,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -54,13 +55,19 @@ func (a *App) Run(fn func(c types.Context) error) error {
 		writeTimeout = timeout
 	}
 
+	baseCtx, cancelBase := context.WithCancel(context.Background())
 	a.server = &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", a.config.Host, a.config.Port),
 		Handler:      a,
 		ReadTimeout:  readTimeout,
 		WriteTimeout: writeTimeout,
 		IdleTimeout:  DefaultIdleTimeout,
+		// Every request context derives from baseCtx, which Shutdown cancels
+		// first: a long-lived streaming handler sees its context end and
+		// returns, instead of holding Shutdown open until its timeout.
+		BaseContext: func(net.Listener) context.Context { return baseCtx },
 	}
+	a.server.RegisterOnShutdown(cancelBase)
 
 	// Channel to signal server errors
 	errChan := make(chan error, 1)
