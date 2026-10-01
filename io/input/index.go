@@ -92,6 +92,18 @@ func (i *Input) Populate(payload any) error {
 			continue
 		}
 
+		// queries:"all" hands over every query parameter as a map[string]string
+		// (a copy). A list endpoint filters on whatever the caller names, which the
+		// DTO cannot know in advance, so it cannot list the fields one by one.
+		if tag := field.Tag.Get("queries"); tag == "all" && fieldValue.Type() == reflect.TypeOf(map[string]string(nil)) {
+			all := make(map[string]string, len(queries))
+			for k, v := range queries {
+				all[k] = v
+			}
+			fieldValue.Set(reflect.ValueOf(all))
+			continue
+		}
+
 		// Check header tag
 		if tag := field.Tag.Get("header"); tag != "" {
 			if values, ok := headers[tag]; ok && len(values) > 0 {
