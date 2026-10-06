@@ -342,3 +342,14 @@ func keys(m map[string]any) []string {
 	}
 	return out
 }
+
+func TestSameControllerMethodTwiceIsOneOperation(t *testing.T) {
+	r := router.Get("/x", []any{Controller{}, "List"})
+	d, err := openapi.FromRoutes([]types.Route{r, r}, openapi.Options{})
+	if err != nil {
+		t.Fatalf("the same handler registered through two parents must not be an error: %v", err)
+	}
+	if _, ok := d["paths"]; !ok {
+		t.Fatal("no paths")
+	}
+}

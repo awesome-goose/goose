@@ -61,6 +61,8 @@ type builder struct {
 	ids  map[string]int
 	tags map[string]bool
 	err  []string
+	// handlers maps "METHOD /path" to the handler documented for it
+	handlers map[string]string
 }
 
 // Build documents the routes the kernel booted with. Call it after Start has returned.
@@ -224,6 +226,18 @@ func (b *builder) operation(r types.Route, path string) {
 		b.err = append(b.err, fmt.Sprintf("%s %s: the handler is not func(*Dto) or a controller method", strings.ToUpper(method), full))
 		return
 	}
+
+	// The same handler on the same method and path, reached through two parent
+	// modules (ForRoutes is per parent by design), is one operation, not a clash.
+	sig := strings.ToUpper(method) + " " + templated(full)
+	hid := handlerIdentity(r.Handler)
+	if prev, seen := b.handlers[sig]; seen && prev == hid {
+		return
+	}
+	if b.handlers == nil {
+		b.handlers = map[string]string{}
+	}
+	b.handlers[sig] = hid
 
 	op := map[string]any{}
 	var extra Operation
@@ -410,4 +424,18 @@ func upperFirst(s string) string {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// handlerIdentity names the handler behind a route so two registrations of the
+// same one can be told from two different handlers that share a Dto type: a
+// controller method is its controller type and method name, a function is its
+// code pointer.
+func handlerIdentity(h any) string {
+	if parts, ok := h.([]any); ok && len(parts) == 2 {
+		return fmt.Sprintf("%T|%v", parts[0], parts[1])
+	}
+	if v := reflect.ValueOf(h); v.Kind() == reflect.Func {
+		return fmt.Sprintf("func:%x", v.Pointer())
+	}
+	return fmt.Sprintf("%T", h)
 }
