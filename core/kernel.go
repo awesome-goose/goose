@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	gocontext "context"
+	stderrors "errors"
 	"net/http"
 	"os"
 	"os/signal"
@@ -305,6 +306,12 @@ func (k *kernel) createHandler() func(context types.Context) error {
 
 		for _, middleware := range route.Middlewares {
 			if err := middleware.Handle(context); err != nil {
+				// A middleware may answer the request itself (a replayed
+				// idempotent response, a 429) instead of failing it.
+				var respond *types.Respond
+				if stderrors.As(err, &respond) && respond.Output != nil {
+					return k.writeOutput(context, respond.Output)
+				}
 				return err
 			}
 		}
@@ -314,25 +321,40 @@ func (k *kernel) createHandler() func(context types.Context) error {
 			return err
 		}
 
-		if headers := output.Headers(); headers != nil {
-			context.Response().SetHeaders(headers)
+		// After hooks run innermost first, so a middleware can observe or
+		// replace the handler's output (store it, add headers, wrap it).
+		for i := len(route.Middlewares) - 1; i >= 0; i-- {
+			if after, ok := route.Middlewares[i].(types.AfterMiddleware); ok {
+				if output, err = after.After(context, output); err != nil {
+					return err
+				}
+			}
 		}
 
-		if contentType := output.ContentType(); contentType != "" {
-			context.Response().SetHeader("Content-Type", contentType)
-		}
-
-		if streamOutput, ok := output.(types.StreamOutput); ok {
-			return k.writeStream(context, streamOutput)
-		}
-
-		serialType, buf, err := k.serializer.Serialize(output.Data())
-		if err != nil {
-			return err
-		}
-
-		return context.Response().Write(serialType, buf, output.Code())
+		return k.writeOutput(context, output)
 	}
+}
+
+// writeOutput writes a handler's (or middleware's) output to the response.
+func (k *kernel) writeOutput(context types.Context, output types.Output) error {
+	if headers := output.Headers(); headers != nil {
+		context.Response().SetHeaders(headers)
+	}
+
+	if contentType := output.ContentType(); contentType != "" {
+		context.Response().SetHeader("Content-Type", contentType)
+	}
+
+	if streamOutput, ok := output.(types.StreamOutput); ok {
+		return k.writeStream(context, streamOutput)
+	}
+
+	serialType, buf, err := k.serializer.Serialize(output.Data())
+	if err != nil {
+		return err
+	}
+
+	return context.Response().Write(serialType, buf, output.Code())
 }
 
 // writeStream serves a types.StreamOutput (U-G2): on an HTTP platform (any
