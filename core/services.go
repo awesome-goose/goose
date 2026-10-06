@@ -14,8 +14,11 @@ import (
 var (
 	services = []any{
 		func() (config.AppConfigPath, error) {
-			path, err := path.AppRoot()
-			return config.AppConfigPath(path), err
+			// YAML config lives in <app root>/config (see docs: Configuration).
+			// Pointing at the app root would parse every YAML file under it
+			// (assets, media, node_modules) and fail on the first non-config one.
+			dir, err := path.Config()
+			return config.AppConfigPath(dir), err
 		},
 		func() (log.AppLogChannel, error) {
 			return log.AppLogChannel("std"), nil

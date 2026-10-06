@@ -216,3 +216,13 @@ func (s *ConfigSuite) TestNewConfig_YmlExtension() {
 	s.T.Expect(err).ToBeNil()
 	s.T.Expect(cfg.Get("test.key")).ToEqual("yml-value")
 }
+
+func (s *ConfigSuite) TestNewConfig_MissingDirIsEmpty() {
+	base, _ := os.MkdirTemp("", "missing_config_test")
+	defer os.RemoveAll(base)
+
+	cfg, err := config.NewConfig(config.AppConfigPath(filepath.Join(base, "does-not-exist")))
+
+	s.T.Expect(err).ToBeNil()
+	s.T.Expect(cfg).Not().ToBeNil()
+}

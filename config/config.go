@@ -35,6 +35,11 @@ func NewConfig(appPath AppConfigPath) (*Config, error) {
 
 	tree := props.Props{}
 
+	// A missing config directory is not an error: it is optional.
+	if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
+		return &Config{tree: tree, dir: dir}, nil
+	}
+
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return err
