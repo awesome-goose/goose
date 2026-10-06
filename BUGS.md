@@ -538,3 +538,20 @@ one) so tests can drive `ServeHTTP` directly without a live listener. Regression
   With one CLI instance, `myapp worker` runs `worker`; `myapp cli worker` reports `ROUTE_NOT_FOUND`.
   With `[SPA, CLI]`, `myapp cli worker` boots only the CLI instance. Both are intended.
 - **The SPA platform listens on `localhost` by default.** Set `spa.WithHost("0.0.0.0")` in a container.
+
+---
+
+# Legger spikes (from `legger/index/TRD.md` §4.3, 2026-10-06)
+
+Each is a spike first; fix in the framework, non-breaking, if the gap is real.
+
+- **G1 `openapi`:** confirm the builder covers controller-method routes (`[]any{Controller{}, "Method"}`), `router.Mount` prefixes, error envelopes and header declarations (`Idempotency-Key`).
+- **G2 `sql`:** a request-scoped transaction a handler, an outbox write and a ledger call can share.
+- **G3 `router`:** a documented middleware-order hook for a group of mounted routes (auth → tenant → rate limit → idempotency → handler).
+
+## Results (2026-10-06)
+
+- **G1 `openapi` — works, one fix made.** Booted `legger/cloud` and built a document: 134 paths, 228 operations; request bodies, headers and bearer auth come from the Dto tags. Fixed: the same handler registered on the same method and path through two parent modules (by design per `ForRoutes`) was reported as "registered twice"; it is now one operation, while genuinely different handlers still error (tests added). Remaining limits, not bugs: responses are untyped (`{}`) unless a Dto implements `OpenAPI()`; generic `crud.Resource` routes carry no body schema (103 of 228 operations); the error envelope documented is Goose's, so `/v1` documents its own.
+- **G2 `sql` — no change needed.** `Query.Tx` plus `Entity.With(query)` already let several entities share one transaction. The work is in Legger's ledger (`Layer1` must accept an outer `*gorm.DB` tx) and outbox.
+- **G3 `router` — no change needed.** `router.Mount(prefix, module, middlewares...)` attaches an ordered chain to the whole subtree (mount-level first, route-level after). Caveat: middlewares are attached at the prefix's innermost segment, so give `/v1` one `Mount` call.
+- **Fixed earlier (found by Legger e2e):** the default config service parsed every YAML under the app root (now `<root>/config`; `NewConfig` tolerates a missing directory).
