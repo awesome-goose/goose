@@ -2,6 +2,7 @@ package sql
 
 import (
 	"fmt"
+	"gorm.io/gorm"
 	"time"
 
 	"github.com/awesome-goose/goose/errors"
@@ -51,4 +52,21 @@ func (r *Runner) Run(m Runnable) error {
 			ExecutedAt: time.Now(),
 		}).Error
 	})
+}
+
+// Migrate runs migrations against db, skipping those already recorded. It is
+// the same bookkeeping the module uses at boot, so a host that needs its
+// tables before the module has booted can call it first and the module's own
+// pass will find every record in place.
+func Migrate(db *gorm.DB, migrations []Migration) error {
+	r := &Runner{db: &Db{DB: db}}
+	if err := r.CreateTableSchema(); err != nil {
+		return err
+	}
+	for _, m := range migrations {
+		if err := r.Run(m); err != nil {
+			return err
+		}
+	}
+	return nil
 }
