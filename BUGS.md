@@ -263,7 +263,7 @@ Apps carrying the `ngx-apps/projects/spaces` workaround (reading
 
 ---
 
-## 6. Module `Boot()` hooks run in non-deterministic order — OPEN
+## 6. Module `Boot()` hooks run in non-deterministic order — FIXED
 
 **File:** `core/traverser.go:53-56` (`collectHooks`), `core/registry.go:433-442`
 (`ListModules`), `core/registry.go:445-459` (`ListDeclarations`).
@@ -334,9 +334,20 @@ migrated table) run enough times to catch the non-determinism, or a
 deterministic repro that inspects `onBootStack`'s built order directly
 instead of relying on the random map to misbehave.
 
+**Fix applied (2026-10-09):** `Registry` now records modules in processing
+(topological) order and gives each declaration a creation sequence;
+`ListModules`/`ListDeclarations` return that order instead of map order.
+`collectHooks` pushes hooks so that, under the stack's LIFO execution,
+dependencies boot before the modules that import them and a module's own
+declarations boot before the module (shutdown is the exact mirror). Each
+instance's hooks are registered once, by the module that owns it.
+Regression tests: `core/boot_order_test.go` (dependency order, shutdown
+mirror, and 300 repeated traversals that must yield one identical order — it
+fails on the old code).
+
 ---
 
-## 7. `sql.Config.Sync` / `WithSync` is dead code — OPEN
+## 7. `sql.Config.Sync` / `WithSync` is dead code — FIXED (deprecated)
 
 **File:** `modules/sql/types.go:18` (field), `types.go:68` (`WithSync` option).
 
@@ -375,6 +386,11 @@ over the module's own declared entities, if that's the intended behavior) or
 remove the field/option entirely and let the compiler catch existing
 callers — a silently-ignored bool is worse than a missing one.
 
+
+**Fix applied (2026-10-09):** the field and option are kept for source
+compatibility (other projects set them) but marked `Deprecated`, and setting
+`Sync: true` now logs a warning at startup, so the no-op is never silent.
+Remove the field in the next breaking release.
 ---
 
 ## 8. `modules/sql` built the Postgres DSN without quoting, so an empty password broke the connection — FIXED

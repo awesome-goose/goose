@@ -108,6 +108,9 @@ func (m *sqlModule) Boot(k types.Kernel) error {
 }
 
 func (m *sqlModule) initialize(log types.Log) *Db {
+	if m.config.Sync {
+		log.Warning("sql: Config.Sync / WithSync is deprecated and has no effect (there is no auto-migration; schema changes are Migrations)")
+	}
 	dialect := m.config.Dialect
 	if dialect == "" {
 		dialect = "postgres"
