@@ -17,8 +17,18 @@ func UserHome() (string, error) {
 	return u.HomeDir, nil
 }
 
-// AppRoot returns the directory where the compiled executable is located.
+// AppRoot returns the application root.
+//
+// Resolution order: the APP_ROOT environment variable; the nearest directory
+// containing go.mod walking up from the executable, then from the working
+// directory (the `go run` / development case); finally the working directory
+// itself. A deployed binary has no go.mod beside it, and the root is only
+// used to locate optional resources (config/, lang/, ...), so failing to boot
+// there would be wrong.
 func AppRoot() (string, error) {
+	if root := os.Getenv("APP_ROOT"); root != "" {
+		return root, nil
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
@@ -41,6 +51,9 @@ func AppRoot() (string, error) {
 		if root := searchGoMod(cwd); root != "" {
 			return root, nil
 		}
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		return cwd, nil
 	}
 	return "", os.ErrNotExist
 }

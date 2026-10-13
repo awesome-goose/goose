@@ -548,6 +548,38 @@ one) so tests can drive `ServeHTTP` directly without a live listener. Regression
 
 ---
 
+## 14. `platforms/api` wrote a second response after a middleware had already answered — FIXED
+
+**File:** `platforms/api/app.go` (`App.ServeHTTP`).
+
+A middleware may answer a request itself and return an error only to stop the chain; scaffold's
+`AuthMiddleware` does exactly this for a 401 (writes its JSON envelope, then returns a sentinel).
+`ServeHTTP` treated every non-nil error as "nothing written yet" and called `http.Error`, so the
+response got a second `WriteHeader` (`http: superfluous response.WriteHeader call` in the log) and
+the error text appended to the JSON body (`{"success":false,...}ROUTE_NOT_FOUND: ...`).
+
+**Fix applied:** the response writer is wrapped to record whether anything was written (keeping
+`Flusher`, `Hijacker` and `Unwrap`, which SSE and WebSocket upgrades rely on); when the handler
+already responded, the error is not written again. Regression test:
+`tests/api_written_response_test.go` — fails against the unfixed code.
+
+---
+
+## 15. `utils/path.AppRoot` failed for a built binary, aborting boot — FIXED
+
+**File:** `utils/path/base.go`.
+
+`AppRoot` only found a directory by walking up from the executable and the working directory
+looking for `go.mod`. A deployed binary has no `go.mod` above it, so `AppRoot` returned
+`os.ErrNotExist`, the default config service failed to register, and the process exited with
+`SERVICE_REGISTRATION_ERROR ... file does not exist`. The root is only used to find optional
+resources (`config/`, `lang/`), so this should never be fatal.
+
+**Fix applied:** resolution is now `APP_ROOT`, then the nearest `go.mod` (unchanged), then the
+working directory. Regression tests: `tests/path_app_root_test.go`.
+
+---
+
 ## Not a bug, but easy to trip over
 
 - **Single-instance CLI apps take the raw argument list; multi-instance apps take `cli <command>`.**
