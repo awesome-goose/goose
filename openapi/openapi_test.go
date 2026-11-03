@@ -353,3 +353,48 @@ func TestSameControllerMethodTwiceIsOneOperation(t *testing.T) {
 		t.Fatal("no paths")
 	}
 }
+
+type Page[T any] struct {
+	Items []T    `json:"items"`
+	Next  string `json:"next,omitempty"`
+}
+
+type ApiError struct {
+	Code      string `json:"code" binding:"required"`
+	Retryable bool   `json:"retryable"`
+}
+
+type PageDto struct{}
+
+func (PageDto) OpenAPI() openapi.Operation { return openapi.Operation{Response: Page[Thing]{}} }
+
+func TestErrorEnvelopeAndGenericNames(t *testing.T) {
+	wrap := func(body map[string]any) map[string]any {
+		return map[string]any{"type": "object", "properties": map[string]any{"status": map[string]any{"type": "string"}, "data": body}}
+	}
+	rs := []types.Route{
+		router.Get("/page", func(d *PageDto) types.Output { return nil }),
+		router.Get("/bare", func(d *UploadDto) types.Output { return nil }),
+	}
+	d, err := openapi.FromRoutes(rs, openapi.Options{Error: ApiError{}, Envelope: wrap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok := at(d, "paths", "/page", "get", "responses", "200", "content", "application/json", "schema", "properties", "data", "$ref")
+	if ok != "#/components/schemas/PageThing" {
+		t.Errorf("success body inside the envelope: %v", ok)
+	}
+	if at(d, "components", "schemas", "PageThing", "properties", "items", "items", "$ref") != "#/components/schemas/Thing" {
+		t.Errorf("generic component: %v", at(d, "components", "schemas"))
+	}
+	bare := at(d, "paths", "/bare", "get", "responses", "200", "content", "application/json", "schema", "properties", "data")
+	if m, isMap := bare.(map[string]any); !isMap || len(m) != 0 {
+		t.Errorf("an undocumented body is still wrapped, as any JSON: %v", bare)
+	}
+	if at(d, "paths", "/page", "get", "responses", "default", "content", "application/json", "schema", "$ref") != "#/components/schemas/ApiError" {
+		t.Errorf("error schema from Options.Error")
+	}
+	if problems := openapi.Validate(d); len(problems) > 0 {
+		t.Errorf("valid: %v", problems)
+	}
+}

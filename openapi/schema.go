@@ -3,6 +3,7 @@ package openapi
 import (
 	"encoding/json"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -265,9 +266,27 @@ func (b *builder) schemaOf(t reflect.Type) map[string]any {
 	return map[string]any{} // interfaces and anything else: any JSON
 }
 
+// typeArgs matches the package paths inside a generic type's name: "Page[a/b/pkg.Post]".
+var typeArgs = regexp.MustCompile(`[A-Za-z0-9_./-]*\.`)
+
+// componentName is a struct's name as a component name. A generic instance such as
+// Page[github.com/x/pkg.Post] becomes PagePost: component names allow only [A-Za-z0-9._-].
+func componentName(t reflect.Type) string {
+	name := t.Name()
+	if !strings.Contains(name, "[") {
+		return name
+	}
+	name = typeArgs.ReplaceAllString(name, "")
+	var out strings.Builder
+	for _, part := range regexp.MustCompile(`[^A-Za-z0-9]+`).Split(name, -1) {
+		out.WriteString(upperFirst(part))
+	}
+	return out.String()
+}
+
 // ref registers a struct as a component and points at it.
 func (b *builder) ref(t reflect.Type) map[string]any {
-	name := t.Name()
+	name := componentName(t)
 	if name == "" {
 		return b.objectOf(t)
 	}

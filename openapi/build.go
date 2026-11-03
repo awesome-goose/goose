@@ -29,6 +29,13 @@ type Options struct {
 	BearerAuth bool
 	// Skip leaves a route out (health checks, internal routes).
 	Skip func(method, path string) bool
+	// Error is a value whose type is the body of every error response; its json tags are
+	// the schema. When nil, errors are {status, title, message, data}.
+	Error any
+	// Envelope wraps each success body schema in the body the server really sends, for
+	// hosts whose responses put the handler's data inside an envelope. It gets the schema
+	// the operation documents ({} when it documents none) and returns the one to write.
+	Envelope func(body map[string]any) map[string]any
 }
 
 // Operation lets a Dto say more about its route than the tags can.
@@ -319,14 +326,21 @@ func (b *builder) operation(r types.Route, path string) {
 		status = 200
 	}
 	resp := map[string]any{"description": "Success"}
+	success := map[string]any{}
 	if extra.Response != nil {
-		resp["content"] = map[string]any{"application/json": map[string]any{"schema": b.schemaOf(reflect.TypeOf(extra.Response))}}
-	} else {
-		resp["content"] = map[string]any{"application/json": map[string]any{"schema": map[string]any{}}}
+		success = b.schemaOf(reflect.TypeOf(extra.Response))
+	}
+	if b.opts.Envelope != nil {
+		success = b.opts.Envelope(success)
+	}
+	resp["content"] = map[string]any{"application/json": map[string]any{"schema": success}}
+	failure := errorSchema
+	if b.opts.Error != nil {
+		failure = b.schemaOf(reflect.TypeOf(b.opts.Error))
 	}
 	op["responses"] = map[string]any{
 		strconv.Itoa(status): resp,
-		"default":            map[string]any{"description": "An error: a status code and a message", "content": map[string]any{"application/json": map[string]any{"schema": errorSchema}}},
+		"default":            map[string]any{"description": "An error: a status code and a message", "content": map[string]any{"application/json": map[string]any{"schema": failure}}},
 	}
 
 	if b.paths[templ] == nil {
