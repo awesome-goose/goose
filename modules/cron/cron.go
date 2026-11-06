@@ -264,13 +264,43 @@ func (c *Cron) Log(jobId string, status string, output any) (*CronLog, error) {
 	return log, nil
 }
 
+// addHandlers registers handlers on a runner that is already running.
+func (c *Cron) addHandlers(handlers []*CronHandler) {
+	for _, h := range handlers {
+		if _, err := c.Register(h.Group, h.Name, h.Pattern, h.Config); err != nil {
+			c.log.Warning(fmt.Sprintf("Failed to register cron job %s/%s: %v", h.Group, h.Name, err))
+			continue
+		}
+		c.mu.Lock()
+		if c.handlers == nil {
+			c.handlers = make(map[string]*CronHandler)
+		}
+		c.handlers[handlerKey(h.Group, h.Name)] = h
+		c.mu.Unlock()
+	}
+	if len(handlers) > 0 {
+		c.log.Info(fmt.Sprintf("Cron runner added %d handlers", len(handlers)))
+	}
+}
+
+// HasHandler says whether the runner has a handler for group/name.
+func (c *Cron) HasHandler(group, name string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.handlers[handlerKey(group, name)]
+	return ok
+}
+
 // Start begins the cron runner that checks and executes jobs at regular intervals.
 // This method blocks until Stop is called or the context is cancelled.
 func (c *Cron) Start(ctx context.Context, handlers []*CronHandler) error {
 	c.mu.Lock()
 	if c.isRunning.Load() {
 		c.mu.Unlock()
-		return nil // Already running
+		// Already running: another module (a Child, or the Root) started it first. Its handlers join the running
+		// runner; they used to be dropped, so whichever cron module booted second never ran.
+		c.addHandlers(handlers)
+		return nil
 	}
 	c.isRunning.Store(true)
 	c.isShuttingDown.Store(false)

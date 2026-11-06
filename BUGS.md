@@ -598,6 +598,27 @@ Regression tests: `tests/spa_written_response_test.go`, `TestAPIBodylessStatuses
 
 ---
 
+## 17. A second cron module's handlers never ran — FIXED
+
+**Files:** `modules/cron/cron.go` (`Cron.Start`).
+
+`cron.Child` promises "register additional cron handlers", but every cron module's `Boot` calls `Start` on the
+one `*Cron`, and `Start` returned at once when the runner was already running. Whichever cron module booted
+second (a `Child` after the `Root`, or the `Root` after a `Child`, since boot-hook order across modules isn't
+fixed) had its handlers silently dropped. Seen in Yan: a library's `cron.Child` tick next to the scaffold cron
+app's `Root` never fired, and the log still said "Cron runner started with 6 handlers".
+
+**Fix applied:** `Start` on a running runner registers the extra handlers on it (`addHandlers`, logged as "Cron
+runner added N handlers"). Additive: `Cron.HasHandler(group, name)`. Regression test:
+`TestCronModulesShareOneRunner` (fails without the fix).
+
+Seen while testing it, not fixed here: on SQLite the cron tables' `TIMESTAMP(6)` columns come back as strings
+(the driver only parses a declared type of exactly `timestamp`), so `Register` fails to read the job back and
+every handler is skipped. Postgres is unaffected. Changing the DDL would alter MySQL's precision and semantics,
+so it needs its own decision.
+
+---
+
 ## Not a bug, but easy to trip over
 
 - **Single-instance CLI apps take the raw argument list; multi-instance apps take `cli <command>`.**
