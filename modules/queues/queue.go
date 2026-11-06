@@ -389,17 +389,20 @@ func (q *Queue) Pop(queueName string, jobName string) (*QueueJob, error) {
 		queueName = q.queueName()
 	}
 
-	// Get the queue
+	// Get the queue. Workers poll here before anything was ever pushed, so a
+	// missing queue is the idle state, not a failed query: Find, not First,
+	// which would log "record not found" on every poll.
 	var existingQueue QueueQueue
-	err := q.db.DB.Where("name = ?", queueName).First(&existingQueue).Error
-	if err != nil {
-		if stderrors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil // No queue found, return nil
-		}
-		return nil, err
+	found := q.db.DB.Where("name = ?", queueName).Limit(1).Find(&existingQueue)
+	if found.Error != nil {
+		return nil, found.Error
+	}
+	if found.RowsAffected == 0 {
+		return nil, nil // No queue found, return nil
 	}
 
 	var poppedJob *QueueJob
+	var err error
 	now := time.Now().UTC()
 
 	// Use transaction with row-level locking. SKIP LOCKED is only supported
