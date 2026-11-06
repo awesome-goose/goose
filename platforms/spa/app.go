@@ -178,8 +178,17 @@ func (a *App) serveAPI(w http.ResponseWriter, r *http.Request) {
 	u.RawPath = ""
 	r2.URL = &u
 
-	ctx := api.NewContext(w, r2)
+	tw, ok := w.(*trackedWriter)
+	if !ok {
+		tw = &trackedWriter{ResponseWriter: w}
+	}
+	ctx := api.NewContext(tw, r2)
 	if err := a.fn(ctx); err != nil {
+		// A middleware may already have answered (an auth 401) and returned
+		// an error only to stop the chain: do not write a second response.
+		if tw.started {
+			return
+		}
 		http.Error(w, err.Error(), statusFor(err))
 	}
 }

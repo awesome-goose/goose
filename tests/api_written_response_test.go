@@ -32,3 +32,22 @@ func TestAPIDoesNotRewriteAnAlreadyWrittenResponse(t *testing.T) {
 		t.Fatalf("body was rewritten after the handler had responded: %q", body)
 	}
 }
+
+// A 304 (or 204) must go out without a body, and must not turn into a second
+// 500 response because net/http refuses to write one.
+func TestAPIBodylessStatusesDoNotWriteABody(t *testing.T) {
+	for _, status := range []int{http.StatusNotModified, http.StatusNoContent} {
+		app := api.NewApp(&api.Config{Host: "127.0.0.1", Port: 0})
+		app.SetHandler(func(c types.Context) error {
+			return c.Response().Write(types.SerialTypeObject, []byte(`{"success":true}`), status)
+		})
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httptest.NewRequest("GET", "/x", nil))
+		if rec.Code != status {
+			t.Fatalf("status = %d, want %d", rec.Code, status)
+		}
+		if rec.Body.Len() != 0 {
+			t.Fatalf("status %d carried a body: %q", status, rec.Body.String())
+		}
+	}
+}

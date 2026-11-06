@@ -580,6 +580,24 @@ working directory. Regression tests: `tests/path_app_root_test.go`.
 
 ---
 
+## 16. `platforms/spa` answered twice after a middleware responded, and bodyless statuses became 500s — FIXED
+
+**Files:** `platforms/spa/app.go` (`serveAPI`), `platforms/api/response.go` (`Response.Write`).
+
+Two related defects, both visible as `http: superfluous response.WriteHeader call` in the log:
+
+1. `spa.serveAPI` repeated the #14 mistake: a middleware that wrote its own 401 and returned an error to
+   stop the chain got `http.Error` appended to its body. The api platform was fixed; the SPA platform was not.
+2. `Response.Write` wrote the JSON body for every status. For `304`, `204` and `1xx` net/http refuses
+   (`ErrBodyNotAllowed`), the error propagated, and the platform turned it into a second 500 response. A
+   conditional GET answering `304` therefore logged a fault on every poll.
+
+**Fix applied:** `serveAPI` tracks whether the response started (reusing the package's `trackedWriter`)
+and does not write again; `Response.Write` skips the body for statuses that cannot carry one.
+Regression tests: `tests/spa_written_response_test.go`, `TestAPIBodylessStatusesDoNotWriteABody`.
+
+---
+
 ## Not a bug, but easy to trip over
 
 - **Single-instance CLI apps take the raw argument list; multi-instance apps take `cli <command>`.**
