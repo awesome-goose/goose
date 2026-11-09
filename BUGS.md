@@ -693,6 +693,24 @@ header. Tests: `tests/input_numbers_headers_test.go`.
 
 ---
 
+## 22. Migrations and seeders are recorded by `%T`, once per database — PARTLY ADDRESSED (additive)
+
+**Files:** `modules/sql/runner.go`.
+
+A migration or seeder is recorded as `fmt.Sprintf("%T", m)`, e.g. `*migrations.CreateLogs`: the package name
+without its path. Two libraries that each have a `migrations` package with the same type name collide, and the
+second one never runs. Seeders run once per database by the same record, so reference data added later (a new
+currency, a new topic) never reaches a database that was seeded before. Found by Yan (lane 2).
+
+**Added, not changed:** renaming recorded entries would re-run every existing migration, so `%T` stays the
+default. A migration or seeder may implement `Named` (`MigrationName() string`) to choose a qualified name
+(`"wallet/seed-currencies@2"`: a new version of reference data under a new name runs once more), or
+`Repeatable` (`Repeat() bool`) to run on every boot (idempotent reference data). `sql.RecordName(m)` reports the
+name. Test: `TestSQLMigrateNamedAndRepeatable`. **Still open:** existing same-named pairs across libraries are
+not detected; a boot-time check that warns on duplicate record names would catch them.
+
+---
+
 ## Not a bug, but easy to trip over
 
 - **Single-instance CLI apps take the raw argument list; multi-instance apps take `cli <command>`.**
