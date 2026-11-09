@@ -656,6 +656,25 @@ observer registered, writes do no extra work. Rows written with gorm directly ar
 
 ---
 
+## 20. A wrong app root silently loaded no `.env`, so the app ran on defaults — FIXED (additive)
+
+**Files:** `utils/path/base.go` (`ResolveAppRoot`), `env/sources/file.go`.
+
+`AppRoot` takes the first `go.mod` above the executable. A binary built into another module's directory (a
+`bin/` inside some other checkout) therefore resolved to that module, found no `.env` there, and the file
+source returned without a word: the app started on defaults, `DB_NAME=yan` included, and ran migrations on a
+shared database. Found by Yan (lane 3, 2026-11-09).
+
+**Fix applied (non-breaking):** resolution order is unchanged. `path.ResolveAppRoot()` also says which rule
+picked the root. The `.env` loader now (1) warns on stderr when the file is missing, naming the path and the
+rule, with the fix (`APP_ROOT`); (2) reads `GOOSE_ENV_FILE` instead of `<root>/.env` when set, and stops the
+process (exit 78, EX_CONFIG) if that file is missing; (3) stops the process on a missing file when
+`GOOSE_ENV_FILE_REQUIRED=true`; (4) stays quiet with `GOOSE_ENV_FILE=-` (configured by the real environment on
+purpose). Products that keep a `.env` at the root or set `APP_ROOT` see no change. Tests:
+`env/sources/file_internal_test.go`, `TestResolveAppRootSaysHow`.
+
+---
+
 ## Not a bug, but easy to trip over
 
 - **Single-instance CLI apps take the raw argument list; multi-instance apps take `cli <command>`.**

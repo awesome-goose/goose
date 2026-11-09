@@ -35,3 +35,20 @@ func TestAppRootHonoursEnv(t *testing.T) {
 		t.Fatalf("AppRoot() = %q, want /srv/app", got)
 	}
 }
+
+func TestResolveAppRootSaysHow(t *testing.T) {
+	t.Setenv("APP_ROOT", "/srv/app")
+	if root, how, err := path.ResolveAppRoot(); err != nil || root != "/srv/app" || how != path.RootFromEnv {
+		t.Fatalf("ResolveAppRoot() = %q %q %v", root, how, err)
+	}
+	dir := t.TempDir()
+	old, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(old)
+	t.Setenv("APP_ROOT", "")
+	if _, how, err := path.ResolveAppRoot(); err != nil || how != path.RootIsWorkingDir {
+		t.Fatalf("how = %q %v, want %q", how, err, path.RootIsWorkingDir)
+	}
+}
