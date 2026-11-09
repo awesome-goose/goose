@@ -675,6 +675,24 @@ purpose). Products that keep a `.env` at the root or set `APP_ROOT` see no chang
 
 ---
 
+## 21. JSON numbers above 2^53 were rounded before they reached a DTO — FIXED
+
+**Files:** `io/input/index.go`.
+
+The binder decoded a JSON body into `map[string]any`, so every number went through float64: an `int64`,
+`uint64`, `string` or struct field (or a `json.RawMessage` re-marshalled from the map) got
+9007199254740993 as 9007199254740992. Money in minor units and chain amounts (wei) were silently changed. Found
+by Yan (lane 2).
+
+**Fix applied (non-breaking):** the body is decoded with `UseNumber` (still nothing allowed after the value, as
+`json.Unmarshal` required); integer, unsigned, string, `json.Number`, slice, map and struct fields get the exact
+value. Fields typed `any`, `map[string]any`, `[]any` or `props.Props` still receive float64s, as before, so
+handlers that type-assert `float64` see no change. **Also added:** `headers:"all"` hands a DTO every request
+header (`map[string]string` or `map[string][]string`, a copy), for webhook receivers that verify a signature
+header. Tests: `tests/input_numbers_headers_test.go`.
+
+---
+
 ## Not a bug, but easy to trip over
 
 - **Single-instance CLI apps take the raw argument list; multi-instance apps take `cli <command>`.**

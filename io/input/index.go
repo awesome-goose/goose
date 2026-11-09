@@ -1,7 +1,9 @@
 package input
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -57,10 +59,14 @@ func (i *Input) Populate(payload any) error {
 			return nil
 		}
 
-		// Try JSON first
-		if err := json.Unmarshal(body, &jsonData); err == nil {
+		// Try JSON first. Numbers are kept as written (json.Number) so an
+		// integer above 2^53 (money in minor units, a chain amount) reaches an
+		// int64, uint64, string or struct field exactly instead of rounded
+		// through float64.
+		if decodeJSONNumbers(body, &jsonData) == nil {
 			return nil
 		}
+		jsonData = nil
 
 		// Try form data
 		formData, _ = url.ParseQuery(string(body))
@@ -102,6 +108,31 @@ func (i *Input) Populate(payload any) error {
 			}
 			fieldValue.Set(reflect.ValueOf(all))
 			continue
+		}
+
+		// headers:"all" hands over every request header (a copy), as
+		// map[string]string (first value) or map[string][]string: a webhook
+		// receiver verifies a provider's signature header it can't name in
+		// advance.
+		if tag := field.Tag.Get("headers"); tag == "all" {
+			switch fieldValue.Type() {
+			case reflect.TypeOf(map[string]string(nil)):
+				all := make(map[string]string, len(headers))
+				for k, vs := range headers {
+					if len(vs) > 0 {
+						all[k] = vs[0]
+					}
+				}
+				fieldValue.Set(reflect.ValueOf(all))
+				continue
+			case reflect.TypeOf(map[string][]string(nil)):
+				all := make(map[string][]string, len(headers))
+				for k, vs := range headers {
+					all[k] = append([]string(nil), vs...)
+				}
+				fieldValue.Set(reflect.ValueOf(all))
+				continue
+			}
 		}
 
 		// Check header tag
@@ -240,12 +271,109 @@ func setFieldValue(field reflect.Value, value string) error {
 	return nil
 }
 
+// decodeJSONNumbers is json.Unmarshal with UseNumber (and, like Unmarshal,
+// nothing allowed after the value).
+func decodeJSONNumbers(body []byte, out any) error {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	if err := dec.Decode(out); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return errors.ErrFailedToSetJSONField
+	}
+	return nil
+}
+
+var jsonNumberType = reflect.TypeOf(json.Number(""))
+
+// asFloats turns the json.Numbers in v back into float64, recursively: what
+// a field of type any (or map[string]any, []any, ...) received before numbers
+// were kept exact, so handlers that type-assert float64 see no change.
+func asFloats(v any) any {
+	switch t := v.(type) {
+	case json.Number:
+		f, _ := t.Float64()
+		return f
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, x := range t {
+			out[k] = asFloats(x)
+		}
+		return out
+	case props.Props:
+		out := make(props.Props, len(t))
+		for k, x := range t {
+			out[k] = asFloats(x)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, x := range t {
+			out[i] = asFloats(x)
+		}
+		return out
+	}
+	return v
+}
+
 func setFieldFromJSON(field reflect.Value, value any) error {
 	if value == nil {
 		return nil
 	}
 
 	fieldType := field.Type()
+
+	if n, ok := value.(json.Number); ok {
+		switch {
+		case fieldType == jsonNumberType:
+			field.Set(reflect.ValueOf(n))
+			return nil
+		case field.Kind() == reflect.String:
+			field.SetString(n.String())
+			return nil
+		case field.Kind() >= reflect.Int && field.Kind() <= reflect.Int64:
+			if i, err := strconv.ParseInt(n.String(), 10, 64); err == nil {
+				field.SetInt(i)
+				return nil
+			}
+			f, err := n.Float64()
+			if err != nil {
+				return errors.ErrCannotConvertToInt.WithMeta(value)
+			}
+			field.SetInt(int64(f))
+			return nil
+		case field.Kind() >= reflect.Uint && field.Kind() <= reflect.Uint64:
+			if u, err := strconv.ParseUint(n.String(), 10, 64); err == nil {
+				field.SetUint(u)
+				return nil
+			}
+			f, err := n.Float64()
+			if err != nil {
+				return errors.ErrCannotConvertToUint.WithMeta(value)
+			}
+			field.SetUint(uint64(f))
+			return nil
+		}
+	}
+
+	// Slices, maps and structs are re-marshalled below, where a json.Number
+	// writes out exactly as it came; anything assigned directly (a field of
+	// type any, map[string]any, props.Props, ...) gets float64s as before.
+	switch field.Kind() {
+	case reflect.Slice, reflect.Map, reflect.Struct:
+		if reflect.TypeOf(value).AssignableTo(fieldType) && !containsNumbers(value) {
+			field.Set(reflect.ValueOf(value))
+			return nil
+		}
+		if fieldType.Kind() == reflect.Map && fieldType.Elem().Kind() == reflect.Interface {
+			value = asFloats(value)
+		} else if fieldType.Kind() == reflect.Slice && fieldType.Elem().Kind() == reflect.Interface {
+			value = asFloats(value)
+		}
+	default:
+		value = asFloats(value)
+	}
 	valueReflect := reflect.ValueOf(value)
 
 	// Handle direct assignment if types match
@@ -339,4 +467,31 @@ func setFieldFromJSON(field reflect.Value, value any) error {
 		return errors.ErrUnsupportedJSONFieldType.WithMeta(field.Kind())
 	}
 	return nil
+}
+
+// containsNumbers reports whether v holds a json.Number anywhere.
+func containsNumbers(v any) bool {
+	switch t := v.(type) {
+	case json.Number:
+		return true
+	case map[string]any:
+		for _, x := range t {
+			if containsNumbers(x) {
+				return true
+			}
+		}
+	case props.Props:
+		for _, x := range t {
+			if containsNumbers(x) {
+				return true
+			}
+		}
+	case []any:
+		for _, x := range t {
+			if containsNumbers(x) {
+				return true
+			}
+		}
+	}
+	return false
 }
