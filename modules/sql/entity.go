@@ -103,8 +103,12 @@ func (r *Entity[T]) Name() string {
 }
 
 // Tx executes a function within a database transaction
+//
+// Change events (ObserveChanges) of the writes made through the transaction's
+// Entity are reported after it commits, and dropped if it rolls back.
 func (r *Entity[T]) Tx(fn func(*Entity[T]) error) error {
-	return r.query.db.Transaction(func(tx *gorm.DB) error {
+	buf := &changeBuffer{}
+	err := r.query.db.Transaction(func(tx *gorm.DB) error {
 		txEntity := &Entity[T]{
 			name:       r.name,
 			searchable: r.searchable,
@@ -114,11 +118,16 @@ func (r *Entity[T]) Tx(fn func(*Entity[T]) error) error {
 			morphs:     r.morphs,
 			hooks:      r.hooks,
 			sort:       r.sort,
-			query:      &Query{db: &Db{DB: tx, log: r.query.db.log}, log: r.log},
+			query:      &Query{db: &Db{DB: tx, log: r.query.db.log}, log: r.log, pending: buf},
 			log:        r.log,
 		}
 		return fn(txEntity)
 	})
+	if err != nil {
+		return err
+	}
+	r.query.settle(buf)
+	return nil
 }
 
 // Exists checks if any entity matches the query.
@@ -325,6 +334,11 @@ func (r *Entity[T]) Insert(entities ...*T) error {
 	if err := r.query.db.Create(&entities).Error; err != nil {
 		return err
 	}
+	if hasObservers() {
+		for _, entity := range entities {
+			r.query.emit(ChangeEvent{Table: r.Name(), Action: ChangeCreate, Record: entity})
+		}
+	}
 
 	// Call AfterCreate morphs and hooks
 	for _, entity := range entities {
@@ -363,6 +377,9 @@ func (r *Entity[T]) Upsert(entities ...*T) error {
 		if err := r.query.db.Save(entity).Error; err != nil {
 			return err
 		}
+		if hasObservers() {
+			r.query.emit(ChangeEvent{Table: r.Name(), Action: ChangeCreate, Record: entity})
+		}
 
 		// Call AfterCreate morph
 		if morph, ok := r.morphs[AfterCreate]; ok {
@@ -395,26 +412,24 @@ func (r *Entity[T]) Update(changes *T, query string, args ...any) (int64, error)
 		}
 	}
 
-	q := r.query.db.Model(new(T))
+	q := r.match(query, args...)
 
-	// If no args, treat query as ID
-	if len(args) == 0 {
-		q = q.Where("id = ?", query)
-	} else {
-		q = q.Where(query, args...)
-	}
-
-	// Apply scope if defined
-	if r.scope != nil {
-		scopeQuery, scopeArgs := r.scope()
-		if scopeQuery != "" {
-			q = q.Where(scopeQuery, scopeArgs...)
+	// With observers, note which rows the update touches, so each can be
+	// reported as it is afterwards.
+	var touched []any
+	observed := hasObservers()
+	if observed && hasIDField[T]() {
+		if err := r.match(query, args...).Limit(maxReportedRows).Pluck("id", &touched).Error; err != nil {
+			return 0, err
 		}
 	}
 
 	result := q.Updates(changes)
 	if result.Error != nil {
 		return 0, result.Error
+	}
+	if observed && result.RowsAffected > 0 {
+		r.emitUpdated(changes, touched, query, args)
 	}
 
 	// Call AfterUpdate morph if registered
@@ -698,6 +713,15 @@ func (r *Entity[T]) Delete(query string, args ...any) (int64, error) {
 		}
 	}
 
+	// With observers, a delete by query reports each row it removes.
+	var removed []T
+	observed := hasObservers()
+	if observed && len(args) > 0 {
+		if err := r.match(query, args...).Limit(maxReportedRows).Find(&removed).Error; err != nil {
+			return 0, err
+		}
+	}
+
 	// Call BeforeDelete morph if registered
 	if morph, ok := r.morphs[BeforeDelete]; ok {
 		morph(entity)
@@ -714,6 +738,15 @@ func (r *Entity[T]) Delete(query string, args ...any) (int64, error) {
 	if result.Error != nil {
 		return 0, result.Error
 	}
+	if observed && result.RowsAffected > 0 {
+		if len(args) == 0 {
+			r.query.emit(ChangeEvent{Table: r.Name(), Action: ChangeDelete, Record: entity, Query: "id = ?", Args: []any{query}})
+		} else {
+			for i := range removed {
+				r.query.emit(ChangeEvent{Table: r.Name(), Action: ChangeDelete, Record: &removed[i], Query: query, Args: args})
+			}
+		}
+	}
 
 	// Call AfterDelete morph if registered
 	if morph, ok := r.morphs[AfterDelete]; ok {
@@ -728,6 +761,56 @@ func (r *Entity[T]) Delete(query string, args ...any) (int64, error) {
 	}
 
 	return result.RowsAffected, nil
+}
+
+// maxReportedRows bounds how many rows one Update or Delete reports to change
+// observers.
+const maxReportedRows = 1000
+
+// match is a fresh query on T's table for the rows an Update or Delete
+// addresses: query/args (or the id in query when args is empty) and the scope.
+func (r *Entity[T]) match(query string, args ...any) *gorm.DB {
+	q := r.query.db.Model(new(T))
+	if len(args) == 0 {
+		q = q.Where("id = ?", query)
+	} else {
+		q = q.Where(query, args...)
+	}
+	if r.scope != nil {
+		scopeQuery, scopeArgs := r.scope()
+		if scopeQuery != "" {
+			q = q.Where(scopeQuery, scopeArgs...)
+		}
+	}
+	return q
+}
+
+// emitUpdated reports an Update: each touched row as it now is, or, for an
+// entity without an id, the changes once.
+func (r *Entity[T]) emitUpdated(changes *T, touched []any, query string, args []any) {
+	if len(touched) == 0 {
+		r.query.emit(ChangeEvent{Table: r.Name(), Action: ChangeUpdate, Record: changes, Query: query, Args: args})
+		return
+	}
+	var rows []T
+	if err := r.query.db.Model(new(T)).Where("id IN ?", touched).Find(&rows).Error; err != nil || len(rows) == 0 {
+		r.query.emit(ChangeEvent{Table: r.Name(), Action: ChangeUpdate, Record: changes, Query: query, Args: args})
+		return
+	}
+	for i := range rows {
+		r.query.emit(ChangeEvent{Table: r.Name(), Action: ChangeUpdate, Record: &rows[i], Query: query, Args: args})
+	}
+}
+
+// hasIDField reports whether T has an Id field (directly or embedded, as
+// BaseEntity's UUIDAware gives it), i.e. an "id" column to report rows by.
+func hasIDField[T any]() bool {
+	t := reflect.TypeOf((*T)(nil)).Elem()
+	if t.Kind() != reflect.Struct {
+		return false
+	}
+	_, ok := t.FieldByName("Id")
+	return ok
 }
 
 func (r *Entity[T]) BuildQuery(queries map[string]string) (string, []any) {

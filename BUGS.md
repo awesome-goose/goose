@@ -636,6 +636,26 @@ that asserted "returns the same pointer" now assert the copy. Regression test:
 
 ---
 
+## 19. Nothing reported what an Entity wrote, so no `apps.db.*` event ever fired — FIXED (additive)
+
+**Files:** `modules/sql/changes.go` (new), `modules/sql/entity.go`, `modules/sql/query.go`.
+
+The scaffold libraries were ported from TS, where the repository published `apps.db.<table>.after-insert`,
+`after-update` and `after-delete` on every write, and their `Subscriptions` still listen for them (identity
+seeds a workspace's roles and alerts on a new device, capital opens a wallet, audit logs). In Go nothing
+published them: `sql.Entity` had per-entity hooks only, so there was no process-wide way to see a write. Found
+by Yan (PLAN U12): no `identity.user.created`.
+
+**Added:** `sql.ObserveChanges(fn) (remove func())`. Every `Entity.Insert`, `Upsert`, `Update` and `Delete`
+reports a `ChangeEvent{Table, Action, Record, Query, Args}` once it succeeds: the inserted row with its id; for
+an update, each touched row as it is afterwards (ids noted before the update, rows read after, at most 1000);
+for a delete, the deleted row(s). Inside `Entity.Tx` and `Query.Tx` (and an `Entity.With` that Tx's `Query`)
+events wait for the commit and are dropped on rollback; a nested Tx hands them to the outer one. With no
+observer registered, writes do no extra work. Rows written with gorm directly are not reported. scaffold
+`core/events/dbevents` turns these into bus events. Tests: `tests/sql_changes_test.go`.
+
+---
+
 ## Not a bug, but easy to trip over
 
 - **Single-instance CLI apps take the raw argument list; multi-instance apps take `cli <command>`.**

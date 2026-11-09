@@ -17,6 +17,10 @@ var validIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-
 type Query struct {
 	db  *Db       `inject:""`
 	log types.Log `inject:""`
+
+	// pending holds the change events of the transaction this Query runs in
+	// (Tx), reported once it commits; nil outside a Tx.
+	pending *changeBuffer
 }
 
 func (r *Query) With(db *Db) *Query {
@@ -27,10 +31,20 @@ func (r *Query) With(db *Db) *Query {
 
 // Tx executes a function within a database transaction.
 // If the function returns an error, the transaction is rolled back.
+//
+// Change events (ObserveChanges) of Entity writes made through the
+// transaction's Query are reported after it commits, and dropped if it rolls
+// back.
 func (r *Query) Tx(fn func(*Query) error) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		return fn(&Query{db: &Db{DB: tx, log: r.db.log}, log: r.log})
+	buf := &changeBuffer{}
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		return fn(&Query{db: &Db{DB: tx, log: r.db.log}, log: r.log, pending: buf})
 	})
+	if err != nil {
+		return err
+	}
+	r.settle(buf)
+	return nil
 }
 
 // Exists checks if any record matches the query
