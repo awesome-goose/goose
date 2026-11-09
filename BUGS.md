@@ -619,6 +619,23 @@ so it needs its own decision.
 
 ---
 
+## 18. Error sentinels were changed per request (a data race) — FIXED
+
+**Files:** `errors/index.go` (`WithError`, `WithMeta`, `WithDetail`, `WithSuggestedAction`).
+
+The package-level sentinels (`ErrFailedToHydrateInput`, `ErrRecordNotFound`, ...) are shared by every
+request, and the `With*` methods set a field on the receiver and returned it. `kernel.go` returns
+`errors.ErrFailedToHydrateInput.WithError(err)` per request, so concurrent requests overwrote each other's
+wrapped error: a data race, and one request's detail could show up in another's response or log. Found by Yan
+(PLAN U16).
+
+**Fix applied:** the `With*` methods return a copy and leave the receiver alone. `errors.Is` still matches
+(it compares `Code`), and no caller in Goose, scaffold or Yan used them for their side effect. The old tests
+that asserted "returns the same pointer" now assert the copy. Regression test:
+`TestSentinelWithIsSafeConcurrently` (reports a DATA RACE under `-race` without the fix).
+
+---
+
 ## Not a bug, but easy to trip over
 
 - **Single-instance CLI apps take the raw argument list; multi-instance apps take `cli <command>`.**

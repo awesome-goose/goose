@@ -81,7 +81,10 @@ func (s *ErrorsSuite) TestWithMeta() {
 	result := err.WithMeta("test meta")
 
 	s.T.Expect(result.Meta).ToEqual("test meta")
-	s.T.Expect(result).ToEqual(err) // Should return same pointer
+	s.T.Expect(result.Code).ToEqual("CODE")
+	// A copy: the receiver (often a shared package-level sentinel) is unchanged.
+	s.T.Expect(err.Meta).ToBeNil()
+	s.T.Expect(result == err).ToBeFalse()
 }
 
 func (s *ErrorsSuite) TestWithError() {
@@ -90,7 +93,9 @@ func (s *ErrorsSuite) TestWithError() {
 	result := err.WithError(inner)
 
 	s.T.Expect(result.Err).ToEqual(inner)
-	s.T.Expect(result).ToEqual(err) // Should return same pointer
+	s.T.Expect(err.Err).ToBeNil()
+	s.T.Expect(errors.Is(result, err)).ToBeTrue()
+	s.T.Expect(errors.Is(result, inner)).ToBeTrue()
 }
 
 func (s *ErrorsSuite) TestWithDetail() {
@@ -98,6 +103,7 @@ func (s *ErrorsSuite) TestWithDetail() {
 	result := err.WithDetail("new detail")
 
 	s.T.Expect(result.Detail).ToEqual("new detail")
+	s.T.Expect(err.Detail).ToEqual("")
 }
 
 func (s *ErrorsSuite) TestWithSuggestedAction() {
@@ -105,6 +111,7 @@ func (s *ErrorsSuite) TestWithSuggestedAction() {
 	result := err.WithSuggestedAction("new action")
 
 	s.T.Expect(result.SuggestedAction).ToEqual("new action")
+	s.T.Expect(err.SuggestedAction).ToEqual("")
 }
 
 func (s *ErrorsSuite) TestGetters() {
