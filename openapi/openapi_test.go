@@ -398,3 +398,52 @@ func TestErrorEnvelopeAndGenericNames(t *testing.T) {
 		t.Errorf("valid: %v", problems)
 	}
 }
+
+type authMW struct{}
+
+func (authMW) Handle(types.Context) error { return nil }
+
+type otherMW struct{}
+
+func (otherMW) Handle(types.Context) error { return nil }
+
+// An operation whose chain (its own and its parents' middlewares) has no auth
+// middleware is documented as open, so clients don't demand a token for it.
+func TestSecuredMarksOpenOperations(t *testing.T) {
+	h := func(*struct{}) {}
+	parent := router.Get("/apps", nil)
+	parent.Middlewares = types.Middlewares{otherMW{}}
+	parent.Children = types.Routes{
+		router.Get("/public", h),
+		router.Get("/private", h, authMW{}),
+	}
+	secured := router.Get("/s", nil)
+	secured.Middlewares = types.Middlewares{authMW{}}
+	secured.Children = types.Routes{router.Get("/inner", h)}
+	isAuth := func(_, _ string, mws []types.Middleware) bool {
+		for _, m := range mws {
+			if _, ok := m.(authMW); ok {
+				return true
+			}
+		}
+		return false
+	}
+	d, err := openapi.FromRoutes(types.Routes{parent, secured}, openapi.Options{BearerAuth: true, Secured: isAuth})
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := func(p string) map[string]any { return d["paths"].(map[string]any)[p].(map[string]any)["get"].(map[string]any) }
+	if s, ok := op("/apps/public")["security"]; !ok || len(s.([]any)) != 0 {
+		t.Fatalf("public op security = %v", s)
+	}
+	for _, p := range []string{"/apps/private", "/s/inner"} {
+		if _, ok := op(p)["security"]; ok {
+			t.Fatalf("%s should inherit the document's bearer security", p)
+		}
+	}
+	// Without Secured, nothing changes.
+	d, _ = openapi.FromRoutes(types.Routes{parent}, openapi.Options{BearerAuth: true})
+	if _, ok := d["paths"].(map[string]any)["/apps/public"].(map[string]any)["get"].(map[string]any)["security"]; ok {
+		t.Fatal("security set without Secured")
+	}
+}

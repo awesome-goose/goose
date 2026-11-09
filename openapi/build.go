@@ -27,6 +27,11 @@ type Options struct {
 	Prefix string
 	// BearerAuth adds a bearer security scheme and applies it to every operation.
 	BearerAuth bool
+	// Secured, with BearerAuth, says whether an operation needs the token, from the
+	// middlewares on its route and every parent route (outermost first). An operation
+	// it reports open gets `security: []`, so a generated client does not demand a
+	// token for sign-in or a public read. Nil: every operation is secured, as before.
+	Secured func(method, path string, middlewares []types.Middleware) bool
 	// Skip leaves a route out (health checks, internal routes).
 	Skip func(method, path string) bool
 	// Error is a value whose type is the body of every error response; its json tags are
@@ -151,20 +156,25 @@ func join(parent, child string) string {
 	return multiSlash.ReplaceAllString(p+"/"+c, "/")
 }
 
-func (b *builder) walk(routes []types.Route, parent string) {
+func (b *builder) walk(routes []types.Route, parent string) { b.walkWith(routes, parent, nil) }
+
+func (b *builder) walkWith(routes []types.Route, parent string, inherited []types.Middleware) {
 	for _, r := range routes {
 		path := join(parent, r.Path)
 		if strings.Contains(r.Path, "*") {
 			continue // a catch-all is not an operation
 		}
+		chain := append(append([]types.Middleware{}, inherited...), r.Middlewares...)
 		if r.Handler != nil {
-			b.operation(r, path)
+			b.operationWith(r, path, chain)
 		}
 		if len(r.Children) > 0 {
-			b.walk(r.Children, path)
+			b.walkWith(r.Children, path, chain)
 		}
 	}
 }
+
+func (b *builder) operation(r types.Route, path string) { b.operationWith(r, path, r.Middlewares) }
 
 // methodOf names the HTTP method of a route.
 func methodOf(m types.Method) string {
@@ -219,7 +229,7 @@ func handlerInput(h any) (in reflect.Type, name string, ok bool) {
 	}
 }
 
-func (b *builder) operation(r types.Route, path string) {
+func (b *builder) operationWith(r types.Route, path string, chain []types.Middleware) {
 	method := methodOf(r.Method)
 	if method == "" {
 		return // a CLI route
@@ -317,6 +327,9 @@ func (b *builder) operation(r types.Route, path string) {
 	}
 	for _, t := range tags {
 		b.tags[t] = true
+	}
+	if b.opts.BearerAuth && b.opts.Secured != nil && !b.opts.Secured(strings.ToUpper(method), full, chain) {
+		op["security"] = []any{}
 	}
 	op["tags"] = toAny(tags)
 	op["operationId"] = b.operationID(handlerName, method, templ, tags[0])
