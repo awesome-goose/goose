@@ -41,6 +41,12 @@ type Options struct {
 	// hosts whose responses put the handler's data inside an envelope. It gets the schema
 	// the operation documents ({} when it documents none) and returns the one to write.
 	Envelope func(body map[string]any) map[string]any
+	// OperationID, when set, names every operation from its method ("get"), its templated
+	// path with the prefix ("/api/apps/x/{id}") and its handler's method name ("" for a func).
+	// Two operations given one name are an error. Nil keeps the handler-name ids. Use
+	// PathOperationID for ids that depend only on the method and path, so the served
+	// document and a committed copy agree whatever order routes registered in.
+	OperationID func(method, path, handler string) string
 }
 
 // Operation lets a Dto say more about its route than the tags can.
@@ -49,6 +55,10 @@ type Operation struct {
 	Description string
 	// Response is a value whose type is the success body; its json tags are the schema.
 	Response any
+	// Request is a value whose type is the JSON request body, for a handler that reads the
+	// body itself (a raw or merged map) so its Dto's tags cannot describe it. It replaces
+	// the body the tags describe.
+	Request any
 	// Status is the success status; 200 when 0.
 	Status int
 	// Tags replace the tag taken from the path.
@@ -59,6 +69,14 @@ type Operation struct {
 
 // Documented is implemented by a Dto (by value) that wants to add to its operation.
 type Documented interface{ OpenAPI() Operation }
+
+// ControllerDocumented is implemented by a controller (by pointer) that documents its own
+// handler methods, for Dtos shared by many controllers: a generic resource whose Dto cannot
+// know the entity it serves. It is asked about every method routed to it by name, and the
+// Dto's own OpenAPI(), if any, wins field by field.
+type ControllerDocumented interface {
+	OpenAPIFor(handler string) Operation
+}
 
 // Document is an OpenAPI 3.1 document. It is plain maps and slices, so it encodes
 // to JSON or YAML with sorted keys and is easy to compare and to patch.
@@ -257,12 +275,16 @@ func (b *builder) operationWith(r types.Route, path string, chain []types.Middle
 	b.handlers[sig] = hid
 
 	op := map[string]any{}
-	var extra Operation
+	extra := controllerOperation(r.Handler, handlerName)
 	if d, isDoc := reflect.New(in).Elem().Interface().(Documented); isDoc {
-		extra = d.OpenAPI()
+		extra = merge(extra, d.OpenAPI())
 	}
 
 	params, body, required := b.fields(in, method)
+	if extra.Request != nil {
+		body = map[string]any{"content": map[string]any{"application/json": map[string]any{"schema": b.schemaOf(reflect.TypeOf(extra.Request))}}}
+		required = true
+	}
 	// every {name} of the path is a path parameter, declared or not
 	templ := templated(full)
 	inPath := map[string]bool{}
@@ -332,7 +354,16 @@ func (b *builder) operationWith(r types.Route, path string, chain []types.Middle
 		op["security"] = []any{}
 	}
 	op["tags"] = toAny(tags)
-	op["operationId"] = b.operationID(handlerName, method, templ, tags[0])
+	if b.opts.OperationID != nil {
+		id := b.opts.OperationID(method, templ, handlerName)
+		if b.ids[id] > 0 {
+			b.err = append(b.err, fmt.Sprintf("%s %s: operationId %q is taken", strings.ToUpper(method), full, id))
+		}
+		b.ids[id]++
+		op["operationId"] = id
+	} else {
+		op["operationId"] = b.operationID(handlerName, method, templ, tags[0])
+	}
 
 	status := extra.Status
 	if status == 0 {
@@ -465,4 +496,46 @@ func handlerIdentity(h any) string {
 		return fmt.Sprintf("func:%x", v.Pointer())
 	}
 	return fmt.Sprintf("%T", h)
+}
+
+// controllerOperation asks a controller about one of its handler methods.
+func controllerOperation(h any, method string) Operation {
+	parts, ok := h.([]any)
+	if !ok || len(parts) != 2 || parts[0] == nil || method == "" {
+		return Operation{}
+	}
+	t := reflect.TypeOf(parts[0])
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if c, isDoc := reflect.New(t).Interface().(ControllerDocumented); isDoc {
+		return c.OpenAPIFor(method)
+	}
+	return Operation{}
+}
+
+// merge lays the fields over sets on base.
+func merge(base, over Operation) Operation {
+	if over.Summary != "" {
+		base.Summary = over.Summary
+	}
+	if over.Description != "" {
+		base.Description = over.Description
+	}
+	if over.Response != nil {
+		base.Response = over.Response
+	}
+	if over.Request != nil {
+		base.Request = over.Request
+	}
+	if over.Status != 0 {
+		base.Status = over.Status
+	}
+	if len(over.Tags) > 0 {
+		base.Tags = over.Tags
+	}
+	if over.Deprecated {
+		base.Deprecated = true
+	}
+	return base
 }
