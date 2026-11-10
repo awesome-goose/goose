@@ -7,7 +7,6 @@ import (
 	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/types"
 	"gorm.io/driver/mysql"
-	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	gormLogger "gorm.io/gorm/logger"
@@ -136,7 +135,7 @@ func (m *sqlModule) initialize(log types.Log) *Db {
 	case "postgres":
 		fallthrough
 	default:
-		dialector = postgres.Open(PostgresDSN(m.config))
+		dialector = postgresDialector(PostgresDSN(m.config), m.config.TimeZone)
 		tablePrefix = PostgresSchema(m.config) + "."
 	}
 

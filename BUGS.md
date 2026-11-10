@@ -711,6 +711,42 @@ not detected; a boot-time check that warns on duplicate record names would catch
 
 ---
 
+## 23. Postgres `timestamptz` values came back in the machine's time zone — FIXED
+
+**Files:** `modules/sql/timezone.go`, `modules/sql/module.go`; `go.mod` (pgx v5.7.1).
+
+`Config.TimeZone` set the session time zone and `NowFunc`, but pgx scans a `timestamptz` into `time.Local`
+whatever the session says. On a machine at +01:00 a row's `createdAt` was `2026-11-10T19:28:12+01:00` for
+columns created as `timestamptz` and `...18:28:12Z` for plain `timestamp` ones, so one API mixed offsets and
+broke a contract that asks for UTC (Yan TRD §7.6). Found by Yan (U25).
+
+**Fix applied (non-breaking):** with a `TimeZone` set, Postgres connections register pgx's `timestamptz`
+codec with `ScanLocation` in that zone (the zone `NowFunc` already writes in). The instant never changes,
+only the offset it is printed with. No `TimeZone` keeps the old behaviour. Needs pgx v5.7 or later (the
+`ScanLocation` field), so Goose now requires v5.7.1. Test: `TestTimestamptzScansInTheConfiguredZone`
+(real Postgres, `GOOSE_TEST_DB_HOST`).
+
+---
+
+## 24. The served OpenAPI document named operations by registration order — FIXED (additive)
+
+**Files:** `openapi/build.go`, `openapi/ids.go`.
+
+`operationId` is the handler's method name, de-duplicated by the tag, then by method and path, in the order
+routes registered. Two handlers named `List` got different ids from one boot to the next, so a host had to
+rewrite every id in a script to commit a stable document, and the document it served still had the old ids
+(found by Yan, U25).
+
+**Added:** `Options.OperationID func(method, path, handler string) string` names every operation (a clash is
+an error), and `PathOperationID(skip...)` derives the id from the method and path only, title-casing each
+word as Python's `str.title()` does: `GET /api/apps/social/posts/{id}` is `getSocialPostsById`. Also added for
+typed responses: `Operation.Request` (the JSON body of a handler that reads the body itself),
+`ControllerDocumented` (a controller documents its own handler methods, for generic resources whose shared
+Dtos cannot name the entity) and `Page[T]` (the shared `{items, next}` page). Without the new options the
+document is unchanged. Tests: `openapi/operation_ids_test.go`.
+
+---
+
 ## Not a bug, but easy to trip over
 
 - **Single-instance CLI apps take the raw argument list; multi-instance apps take `cli <command>`.**
