@@ -349,3 +349,10 @@ func (r *Query) reverseSort(sort string) string {
 	// No explicit order, assume ASC, reverse to DESC
 	return sort + " DESC"
 }
+
+// NewQuery is a Query over an open *gorm.DB, outside the container: for a library's
+// service-level tests and tools, which have no DI to inject one. It is what the container
+// builds, minus the logger (nothing in Query needs it).
+func NewQuery(db *gorm.DB) *Query {
+	return (&Query{}).With(&Db{DB: db})
+}

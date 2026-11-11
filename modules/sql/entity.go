@@ -824,3 +824,14 @@ func (r *Entity[T]) BuildQuery(queries map[string]string) (string, []any) {
 
 	return BuildQuery(queries, r.searchable, r.Name(), scopeQuery, scopeArgs)
 }
+
+// NewEntity is an Entity[T] over q, outside the container (see NewQuery). Name its table as the
+// entity's OnRegister would: wrap it in the library's entity type and call OnRegister, or call
+// Hydrate yourself.
+//
+//	q := sql.NewQuery(db)
+//	payments := &PaymentEntity{Entity: sql.NewEntity[Payment](q)}
+//	payments.OnRegister()
+func NewEntity[T any](q *Query) *Entity[T] {
+	return (&Entity[T]{}).With(q)
+}
