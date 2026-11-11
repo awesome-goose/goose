@@ -90,3 +90,10 @@ func (r *Request) Params() map[string]string {
 func (r *Request) PopulateParams(params map[string]string) {
 	r.paramsCache = params
 }
+
+// RemoteAddr is the address of the connection's peer, as net/http reports it ("host:port"): the
+// client itself, or the last proxy in front of it. types.ClientIP turns it into the client's
+// address, trusting forwarded headers only from configured proxies.
+func (r *Request) RemoteAddr() string {
+	return r.raw.RemoteAddr
+}

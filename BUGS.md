@@ -747,6 +747,23 @@ document is unchanged. Tests: `openapi/operation_ids_test.go`.
 
 ---
 
+## 25. A handler could not learn the client's address — FIXED (additive)
+
+**Files:** `types/clientip.go`, `platforms/api/request.go`, `platforms/web/request.go`.
+
+`types.Request` has headers but no peer address, so nothing behind a Goose server knew who was calling: scaffold
+core read the address from `X-Forwarded-For` only (spoofable, and with a lookup that never matched canonical
+keys), every identity login-attempt row had an empty address, and each per-address limit was one global bucket
+(10 sign-ups an hour for the whole of Yan; one script could block them all). Found by Yan (lane 2).
+
+**Added:** the api, web and spa requests implement `types.RemoteAddresser` (`RemoteAddr()`, net/http's peer);
+`types.RemoteAddr(req)` is "" for a platform without one, so the `Request` interface is unchanged.
+`types.ClientIP(req, trusted)` is the peer address unless the peer is a trusted proxy; then `X-Forwarded-For`
+is read from the right, skipping trusted hops, with `X-Real-Ip` as the fallback. `types.ParsePrefixes` reads
+a CIDR list. Headers from an untrusted peer are never believed. Test: `tests/client_ip_test.go`.
+
+---
+
 ## Not a bug, but easy to trip over
 
 - **Single-instance CLI apps take the raw argument list; multi-instance apps take `cli <command>`.**
