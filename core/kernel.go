@@ -8,12 +8,14 @@ import (
 	"os"
 	"os/signal"
 	"reflect"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/io/input"
+	"github.com/awesome-goose/goose/io/output"
 	"github.com/awesome-goose/goose/types"
 )
 
@@ -571,6 +573,9 @@ func (k *kernel) processHandler(route *types.Route, context types.Context) (type
 
 		inp := input.NewInput(context)
 		err = inp.Populate(argPtr.Interface())
+		if out := missingFieldsOutput(err); out != nil {
+			return out, nil
+		}
 		if err != nil {
 			return nil, errors.ErrFailedToHydrateInput.WithError(err)
 		}
@@ -596,6 +601,9 @@ func (k *kernel) processHandler(route *types.Route, context types.Context) (type
 
 			input := input.NewInput(context)
 			err := input.Populate(paramPtr.Interface())
+			if out := missingFieldsOutput(err); out != nil {
+				return out, nil
+			}
 			if err != nil {
 				return nil, errors.ErrFailedToHydrateInput.WithError(err)
 			}
@@ -610,6 +618,20 @@ func (k *kernel) processHandler(route *types.Route, context types.Context) (type
 	}
 
 	return output, nil
+}
+
+// missingFieldsOutput answers a request that lacks binding:"required" fields: a 400 in goose's
+// JSON shape, {success: false, message, data: {code, fields}}, naming each field. The handler
+// does not run. nil for any other outcome.
+func missingFieldsOutput(err error) types.Output {
+	fields, ok := input.MissingFields(err)
+	if !ok {
+		return nil
+	}
+	return output.BadRequest("missing required field(s): "+strings.Join(fields, ", "), map[string]any{
+		"code":   errors.ErrMissingRequiredFields.GetCode(),
+		"fields": fields,
+	})
 }
 
 func (k *kernel) isValidHandler(route *types.Route) bool {
