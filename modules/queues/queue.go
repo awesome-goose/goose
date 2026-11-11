@@ -757,14 +757,14 @@ func (q *Queue) Process(handler *JobHandler) {
 		// Start auto-scaler goroutine
 		go q.autoScaler(key, queueName, jobName, fn, min, max, pollMs, idleThreshold, timeoutMs, useExpBackoff)
 	}
-	// Workers poll the queue tables: before the root sql module has migrated (a handler wired
+	// Workers poll the queue tables: before the sql modules have migrated (a handler wired
 	// before Boot, on a fresh database) they would query tables that don't exist yet and log an
 	// error per poll (BUGS #26). Wait for sql.Ready; when it is already closed, start now, as before.
 	if ready := sql.Ready(); sql.IsReady() {
 		start()
 	} else {
 		go func() {
-			// a root module that never boots must not stop the queue for good: after a minute,
+			// a module that never boots must not stop the queue for good: after a minute,
 			// start as before
 			select {
 			case <-ready:

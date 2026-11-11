@@ -772,10 +772,10 @@ A library that wires its queue handlers before Boot (scaffold notification start
 wired) started polling at once. On a fresh database the root sql module had not migrated yet, so the first boot
 logged an ERROR per poll for a missing `"QueueQueues"` table. Found by Yan (lane 3).
 
-**Fix applied:** `sql.Ready()` is closed once every root sql module has run its migrations and seeders (closed
+**Fix applied:** `sql.Ready()` is closed once every sql module (root and child) has run its migrations and seeders (closed
 from the start when there is none); queue workers wait on it before their first poll, and start at once, as
-before, when it is already closed. A root that never boots holds them back for at most a minute. Tests:
-`TestReadyClosesWhenTheRootModuleHasMigrated`, the queue suite.
+before, when it is already closed. A module that never boots holds them back for at most a minute. Tests:
+`TestReadyClosesWhenEverySQLModuleHasMigrated`, the queue suite.
 
 **Also added (lane 3):** `sql.NewQuery(*gorm.DB)` and `sql.NewEntity[T](*Query)`, the supported way to build a
 Query or an Entity outside the container, for libraries' service-level tests (`(&sql.Query{}).With(&sql.Db{DB:

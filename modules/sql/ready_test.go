@@ -8,17 +8,23 @@ import (
 )
 
 // BUGS #26: work started before the root module's Boot waits for its migrations.
-func TestReadyClosesWhenTheRootModuleHasMigrated(t *testing.T) {
+func TestReadyClosesWhenEverySQLModuleHasMigrated(t *testing.T) {
 	if !IsReady() {
 		t.Skip("another root module is pending in this process")
 	}
-	m := NewModule(&Config{Dialect: "sqlite", Name: ":memory:"}, true)
+	root := NewModule(&Config{Dialect: "sqlite", Name: ":memory:"}, true)
+	child := NewModule(&Config{}, false) // a library's own migrations, as queues' child module
 	if IsReady() {
-		t.Fatal("ready before the root module booted")
+		t.Fatal("ready before any module booted")
 	}
 	wait := Ready()
-	m.booted = true // what Boot does after its migrations and seeders
-	rootBooted()
+	root.booted = true // what Boot does after its migrations and seeders
+	moduleBooted()
+	if IsReady() {
+		t.Fatal("ready before the child module (the queue tables) migrated")
+	}
+	child.booted = true
+	moduleBooted()
 	select {
 	case <-wait:
 	default:
