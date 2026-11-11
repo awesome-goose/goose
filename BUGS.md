@@ -764,6 +764,25 @@ a CIDR list. Headers from an untrusted peer are never believed. Test: `tests/cli
 
 ---
 
+## 26. Queue workers polled `QueueQueues` before the migrations had made it — FIXED
+
+**Files:** `modules/sql/ready.go`, `modules/sql/module.go`, `modules/queues/queue.go`.
+
+A library that wires its queue handlers before Boot (scaffold notification starts its workers when the pusher is
+wired) started polling at once. On a fresh database the root sql module had not migrated yet, so the first boot
+logged an ERROR per poll for a missing `"QueueQueues"` table. Found by Yan (lane 3).
+
+**Fix applied:** `sql.Ready()` is closed once every root sql module has run its migrations and seeders (closed
+from the start when there is none); queue workers wait on it before their first poll, and start at once, as
+before, when it is already closed. A root that never boots holds them back for at most a minute. Tests:
+`TestReadyClosesWhenTheRootModuleHasMigrated`, the queue suite.
+
+**Also added (lane 3):** `sql.NewQuery(*gorm.DB)` and `sql.NewEntity[T](*Query)`, the supported way to build a
+Query or an Entity outside the container, for libraries' service-level tests (`(&sql.Query{}).With(&sql.Db{DB:
+db})` worked but was undocumented). Test: `TestNewQueryAndNewEntity`.
+
+---
+
 ## Not a bug, but easy to trip over
 
 - **Single-instance CLI apps take the raw argument list; multi-instance apps take `cli <command>`.**

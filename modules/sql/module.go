@@ -18,9 +18,13 @@ type sqlModule struct {
 	db     *Db
 
 	isRoot bool
+	booted bool
 }
 
 func NewModule(config *Config, isRoot bool) *sqlModule {
+	if isRoot {
+		rootCreated()
+	}
 	return &sqlModule{config: config, isRoot: isRoot}
 }
 
@@ -103,6 +107,10 @@ func (m *sqlModule) Boot(k types.Kernel) error {
 		}
 	}
 
+	if m.isRoot && !m.booted {
+		m.booted = true
+		rootBooted()
+	}
 	return nil
 }
 
