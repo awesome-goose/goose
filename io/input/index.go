@@ -3,6 +3,7 @@ package input
 import (
 	"bytes"
 	"encoding/json"
+	stderrors "errors"
 	"io"
 	"net/url"
 	"reflect"
@@ -73,6 +74,7 @@ func (i *Input) Populate(payload any) error {
 		return nil
 	}
 
+	var missing []string
 	for idx := 0; idx < t.NumField(); idx++ {
 		field := t.Field(idx)
 		fieldValue := v.Field(idx)
@@ -81,154 +83,225 @@ func (i *Input) Populate(payload any) error {
 			continue
 		}
 
-		// raw:"body" hands over the request body exactly as received — for
-		// binary uploads, which are neither JSON nor form data. The field
-		// must be []byte or string.
-		if tag := field.Tag.Get("raw"); tag == "body" {
-			body, err := i.context.Request().Body()
-			if err != nil {
-				return err
+		given, err := func() (bool, error) {
+			// raw:"body" hands over the request body exactly as received — for
+			// binary uploads, which are neither JSON nor form data. The field
+			// must be []byte or string.
+			if tag := field.Tag.Get("raw"); tag == "body" {
+				body, err := i.context.Request().Body()
+				if err != nil {
+					return false, err
+				}
+				switch {
+				case fieldValue.Kind() == reflect.Slice && fieldValue.Type().Elem().Kind() == reflect.Uint8:
+					fieldValue.SetBytes(body)
+				case fieldValue.Kind() == reflect.String:
+					fieldValue.SetString(string(body))
+				}
+				return len(body) > 0, nil
 			}
-			switch {
-			case fieldValue.Kind() == reflect.Slice && fieldValue.Type().Elem().Kind() == reflect.Uint8:
-				fieldValue.SetBytes(body)
-			case fieldValue.Kind() == reflect.String:
-				fieldValue.SetString(string(body))
-			}
-			continue
-		}
 
-		// queries:"all" hands over every query parameter as a map[string]string
-		// (a copy). A list endpoint filters on whatever the caller names, which the
-		// DTO cannot know in advance, so it cannot list the fields one by one.
-		if tag := field.Tag.Get("queries"); tag == "all" && fieldValue.Type() == reflect.TypeOf(map[string]string(nil)) {
-			all := make(map[string]string, len(queries))
-			for k, v := range queries {
-				all[k] = v
-			}
-			fieldValue.Set(reflect.ValueOf(all))
-			continue
-		}
-
-		// headers:"all" hands over every request header (a copy), as
-		// map[string]string (first value) or map[string][]string: a webhook
-		// receiver verifies a provider's signature header it can't name in
-		// advance.
-		if tag := field.Tag.Get("headers"); tag == "all" {
-			switch fieldValue.Type() {
-			case reflect.TypeOf(map[string]string(nil)):
-				all := make(map[string]string, len(headers))
-				for k, vs := range headers {
-					if len(vs) > 0 {
-						all[k] = vs[0]
-					}
+			// queries:"all" hands over every query parameter as a map[string]string
+			// (a copy). A list endpoint filters on whatever the caller names, which the
+			// DTO cannot know in advance, so it cannot list the fields one by one.
+			if tag := field.Tag.Get("queries"); tag == "all" && fieldValue.Type() == reflect.TypeOf(map[string]string(nil)) {
+				all := make(map[string]string, len(queries))
+				for k, v := range queries {
+					all[k] = v
 				}
 				fieldValue.Set(reflect.ValueOf(all))
-				continue
-			case reflect.TypeOf(map[string][]string(nil)):
-				all := make(map[string][]string, len(headers))
-				for k, vs := range headers {
-					all[k] = append([]string(nil), vs...)
-				}
-				fieldValue.Set(reflect.ValueOf(all))
-				continue
-			}
-		}
-
-		// Check header tag
-		if tag := field.Tag.Get("header"); tag != "" {
-			if values, ok := headers[tag]; ok && len(values) > 0 {
-				if err := setFieldValue(fieldValue, values[0]); err != nil {
-					return errors.ErrFailedToSetHeaderField.WithError(err).WithMeta(field.Name)
-				}
-				continue
-			}
-		}
-
-		// Check context tag
-		if tag := field.Tag.Get("context"); tag != "" {
-			if value := i.context.GetValue(tag); value != nil {
-				if err := setFieldFromJSON(fieldValue, value); err != nil {
-					return errors.ErrFailedToSetContextField.WithError(err).WithMeta(field.Name)
-				}
-				continue
-			}
-		}
-
-		// Check param tag
-		if tag := field.Tag.Get("param"); tag != "" {
-			if value, ok := params[tag]; ok {
-				if err := setFieldValue(fieldValue, value); err != nil {
-					return errors.ErrFailedToSetParamField.WithError(err).WithMeta(field.Name)
-				}
-				continue
-			}
-		}
-
-		// Check query tag
-		if tag := field.Tag.Get("query"); tag != "" {
-			if value, ok := queries[tag]; ok {
-				if err := setFieldValue(fieldValue, value); err != nil {
-					return errors.ErrFailedToSetQueryField.WithError(err).WithMeta(field.Name)
-				}
-				continue
-			}
-		}
-
-		// Check flag tag (for CLI)
-		if tag := field.Tag.Get("flag"); tag != "" {
-			if value, ok := queries[tag]; ok {
-				if err := setFieldValue(fieldValue, value); err != nil {
-					return errors.ErrFailedToSetFlagField.WithError(err).WithMeta(field.Name)
-				}
-				continue
-			}
-		}
-
-		// Check form tag
-		if tag := field.Tag.Get("form"); tag != "" {
-			if err := parseBody(); err != nil {
-				return err
-			}
-			if formData != nil {
-				if value := formData.Get(tag); value != "" {
-					if err := setFieldValue(fieldValue, value); err != nil {
-						return errors.ErrFailedToSetFormField.WithError(err).WithMeta(field.Name)
-					}
-					continue
-				}
-			}
-		}
-
-		// Check json tag
-		if tag := field.Tag.Get("json"); tag != "" {
-			// Handle omitempty and other options
-			tagName := strings.Split(tag, ",")[0]
-			if tagName == "-" {
-				continue
+				return true, nil
 			}
 
-			if err := parseBody(); err != nil {
-				return err
-			}
-
-			if jsonData != nil {
-				if strings.HasSuffix(tag, ",merge") {
-					if err := setFieldFromJSON(fieldValue, jsonData); err != nil {
-						return errors.ErrFailedToSetJSONField.WithError(err).WithMeta(field.Name)
-					}
-				} else {
-					if value, ok := jsonData[tagName]; ok {
-						if err := setFieldFromJSON(fieldValue, value); err != nil {
-							return errors.ErrFailedToSetJSONField.WithError(err).WithMeta(field.Name)
+			// headers:"all" hands over every request header (a copy), as
+			// map[string]string (first value) or map[string][]string: a webhook
+			// receiver verifies a provider's signature header it can't name in
+			// advance.
+			if tag := field.Tag.Get("headers"); tag == "all" {
+				switch fieldValue.Type() {
+				case reflect.TypeOf(map[string]string(nil)):
+					all := make(map[string]string, len(headers))
+					for k, vs := range headers {
+						if len(vs) > 0 {
+							all[k] = vs[0]
 						}
 					}
+					fieldValue.Set(reflect.ValueOf(all))
+					return true, nil
+				case reflect.TypeOf(map[string][]string(nil)):
+					all := make(map[string][]string, len(headers))
+					for k, vs := range headers {
+						all[k] = append([]string(nil), vs...)
+					}
+					fieldValue.Set(reflect.ValueOf(all))
+					return true, nil
 				}
 			}
+
+			// Check header tag
+			if tag := field.Tag.Get("header"); tag != "" {
+				if values, ok := headers[tag]; ok && len(values) > 0 {
+					if err := setFieldValue(fieldValue, values[0]); err != nil {
+						return false, errors.ErrFailedToSetHeaderField.WithError(err).WithMeta(field.Name)
+					}
+					return values[0] != "", nil
+				}
+			}
+
+			// Check context tag
+			if tag := field.Tag.Get("context"); tag != "" {
+				if value := i.context.GetValue(tag); value != nil {
+					if err := setFieldFromJSON(fieldValue, value); err != nil {
+						return false, errors.ErrFailedToSetContextField.WithError(err).WithMeta(field.Name)
+					}
+					return true, nil
+				}
+			}
+
+			// Check param tag
+			if tag := field.Tag.Get("param"); tag != "" {
+				if value, ok := params[tag]; ok {
+					if err := setFieldValue(fieldValue, value); err != nil {
+						return false, errors.ErrFailedToSetParamField.WithError(err).WithMeta(field.Name)
+					}
+					return value != "", nil
+				}
+			}
+
+			// Check query tag
+			if tag := field.Tag.Get("query"); tag != "" {
+				if value, ok := queries[tag]; ok {
+					if err := setFieldValue(fieldValue, value); err != nil {
+						return false, errors.ErrFailedToSetQueryField.WithError(err).WithMeta(field.Name)
+					}
+					return value != "", nil
+				}
+			}
+
+			// Check flag tag (for CLI)
+			if tag := field.Tag.Get("flag"); tag != "" {
+				if value, ok := queries[tag]; ok {
+					if err := setFieldValue(fieldValue, value); err != nil {
+						return false, errors.ErrFailedToSetFlagField.WithError(err).WithMeta(field.Name)
+					}
+					return value != "", nil
+				}
+			}
+
+			// Check form tag
+			if tag := field.Tag.Get("form"); tag != "" {
+				if err := parseBody(); err != nil {
+					return false, err
+				}
+				if formData != nil {
+					if value := formData.Get(tag); value != "" {
+						if err := setFieldValue(fieldValue, value); err != nil {
+							return false, errors.ErrFailedToSetFormField.WithError(err).WithMeta(field.Name)
+						}
+						return true, nil
+					}
+				}
+			}
+
+			// Check json tag
+			if tag := field.Tag.Get("json"); tag != "" {
+				// Handle omitempty and other options
+				tagName := strings.Split(tag, ",")[0]
+				if tagName == "-" {
+					return false, nil
+				}
+
+				if err := parseBody(); err != nil {
+					return false, err
+				}
+
+				if jsonData != nil {
+					if strings.HasSuffix(tag, ",merge") {
+						if err := setFieldFromJSON(fieldValue, jsonData); err != nil {
+							return false, errors.ErrFailedToSetJSONField.WithError(err).WithMeta(field.Name)
+						}
+						return true, nil
+					}
+					if value, ok := jsonData[tagName]; ok {
+						if err := setFieldFromJSON(fieldValue, value); err != nil {
+							return false, errors.ErrFailedToSetJSONField.WithError(err).WithMeta(field.Name)
+						}
+						// null, like an absent key, gives nothing; so does "" for a string
+						if str, isStr := value.(string); value == nil || (isStr && str == "") {
+							return false, nil
+						}
+						return true, nil
+					}
+				}
+			}
+			return false, nil
+		}()
+		if err != nil {
+			return err
+		}
+		if !given && required(field) {
+			missing = append(missing, wireName(field))
 		}
 	}
 
+	if len(missing) > 0 {
+		return errors.ErrMissingRequiredFields.WithMeta(missing).WithDetail("missing: " + strings.Join(missing, ", "))
+	}
 	return nil
+}
+
+// required reports whether a field is tagged binding:"required" (the same tag OpenAPI documents).
+func required(field reflect.StructField) bool {
+	for _, part := range strings.Split(field.Tag.Get("binding"), ",") {
+		if strings.TrimSpace(part) == "required" {
+			return !callerCannotSend(field)
+		}
+	}
+	return false
+}
+
+// callerCannotSend is a field the request does not supply: the server fills it (context), it
+// takes everything at once (queries:"all", headers:"all", json ",merge"), or json:"-".
+func callerCannotSend(field reflect.StructField) bool {
+	if field.Tag.Get("context") != "" || field.Tag.Get("queries") == "all" || field.Tag.Get("headers") == "all" {
+		return true
+	}
+	if tag, ok := field.Tag.Lookup("json"); ok {
+		name := strings.Split(tag, ",")[0]
+		if strings.HasSuffix(tag, ",merge") {
+			return true
+		}
+		if name == "-" && !hasOtherSource(field) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasOtherSource(field reflect.StructField) bool {
+	for _, k := range []string{"raw", "header", "param", "query", "flag", "form"} {
+		if field.Tag.Get(k) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// wireName is the name a caller sends the field under: its json, form, query, header, param or
+// flag name, "body" for raw:"body", or the Go name.
+func wireName(field reflect.StructField) string {
+	if n := strings.Split(field.Tag.Get("json"), ",")[0]; n != "" && n != "-" {
+		return n
+	}
+	for _, k := range []string{"form", "query", "header", "param", "flag"} {
+		if n := field.Tag.Get(k); n != "" {
+			return n
+		}
+	}
+	if field.Tag.Get("raw") == "body" {
+		return "body"
+	}
+	return field.Name
 }
 
 func setFieldValue(field reflect.Value, value string) error {
@@ -494,4 +567,15 @@ func containsNumbers(v any) bool {
 		}
 	}
 	return false
+}
+
+// MissingFields reports the wire names of the required fields err says are missing
+// (errors.ErrMissingRequiredFields), in field order.
+func MissingFields(err error) ([]string, bool) {
+	var e *errors.Error
+	if !stderrors.As(err, &e) || e.GetCode() != errors.ErrMissingRequiredFields.GetCode() {
+		return nil, false
+	}
+	fields, ok := e.GetMeta().([]string)
+	return fields, ok && len(fields) > 0
 }
