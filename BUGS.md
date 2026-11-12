@@ -783,6 +783,40 @@ db})` worked but was undocumented). Test: `TestNewQueryAndNewEntity`.
 
 ---
 
+## 27. `kv` increments were lost under concurrency, and a key could get two rows — FIXED
+
+**Files:** `modules/kv/kv.go`, `modules/kv/entry.go`, `modules/kv/migrations/unique-group-key.go`.
+
+`IncrBy` read the row, added in Go and wrote the sum back inside a transaction with no row lock, and
+`("group", "key")` had a plain index, not a unique one. Two increments at once both read `n` and both wrote `n+1`;
+two first increments of a missing key each created a row, and later reads picked either. `SetNX` locked the row but
+could not lock one that did not exist yet, so two callers on a missing key could both create it. Found by Origine
+(U-G11): 40 goroutines × 25 increments ended at a value returned twice, and 4 processes ended at 74 of 1,600.
+
+**Fix applied:** a migration (`kv/unique-group-key`) removes duplicate rows (keeping the active row updated last) and
+makes `("group", "key")` unique. `Set`, `SetNX`, `GetSet` and `IncrBy` now take the key's one row with
+`INSERT … ON CONFLICT DO NOTHING` (a deleted placeholder when the key is new) and then `SELECT … FOR UPDATE`, so a
+second caller waits for the first. A deleted or expired key counts from 0 with no expiry; a live key keeps its expiry.
+SQLite skips `FOR UPDATE` (it serializes writers). Tests: `modules/kv/kv_incr_test.go` (goroutines and processes
+against Postgres with `GOOSE_TEST_DB_HOST`; unique index; the migration on duplicates; SQLite).
+
+---
+
+## 28. A handler could not read the query string as sent — FIXED (additive)
+
+**Files:** `types/rawquery.go`, `platforms/api/request.go`, `platforms/web/request.go`, `io/input/index.go`.
+
+A SAML HTTP-Redirect binding message is signed over the query string exactly as the sender encoded it
+(saml-bindings-2.0 §3.4.4.1): its percent escapes (ADFS writes lower-case ones) and its parameter order. A handler
+saw only the decoded `Queries()` map, so it could not check such a signature. Found by Origine (V4-03, SAML single
+logout).
+
+**Fix applied:** the api and web platforms' requests implement `types.RawQuerier` (`RawQuery()`, the URL's raw
+query), `types.RawQuery(req)` falls back to the queries encoded again on other platforms, and a DTO field tagged
+`raw:"query"` (a string) receives it. Tests: `tests/input_raw_query_test.go`.
+
+---
+
 ## Not a bug, but easy to trip over
 
 - **Single-instance CLI apps take the raw argument list; multi-instance apps take `cli <command>`.**

@@ -97,3 +97,8 @@ func (r *Request) PopulateParams(params map[string]string) {
 func (r *Request) RemoteAddr() string {
 	return r.raw.RemoteAddr
 }
+
+// RawQuery is the query string as the client sent it (types.RawQuerier).
+func (r *Request) RawQuery() string {
+	return r.raw.URL.RawQuery
+}
