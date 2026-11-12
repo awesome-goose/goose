@@ -101,6 +101,15 @@ func (i *Input) Populate(payload any) error {
 				return len(body) > 0, nil
 			}
 
+			// raw:"query" hands over the query string exactly as sent (types.RawQuery): a
+			// signature over it (the SAML HTTP-Redirect binding's) covers the sender's own
+			// escapes, which the decoded queries lose. The field must be a string.
+			if tag := field.Tag.Get("raw"); tag == "query" && fieldValue.Kind() == reflect.String {
+				q := types.RawQuery(i.context.Request())
+				fieldValue.SetString(q)
+				return q != "", nil
+			}
+
 			// queries:"all" hands over every query parameter as a map[string]string
 			// (a copy). A list endpoint filters on whatever the caller names, which the
 			// DTO cannot know in advance, so it cannot list the fields one by one.

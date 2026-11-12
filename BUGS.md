@@ -802,6 +802,21 @@ against Postgres with `GOOSE_TEST_DB_HOST`; unique index; the migration on dupli
 
 ---
 
+## 28. A handler could not read the query string as sent — FIXED (additive)
+
+**Files:** `types/rawquery.go`, `platforms/api/request.go`, `platforms/web/request.go`, `io/input/index.go`.
+
+A SAML HTTP-Redirect binding message is signed over the query string exactly as the sender encoded it
+(saml-bindings-2.0 §3.4.4.1): its percent escapes (ADFS writes lower-case ones) and its parameter order. A handler
+saw only the decoded `Queries()` map, so it could not check such a signature. Found by Origine (V4-03, SAML single
+logout).
+
+**Fix applied:** the api and web platforms' requests implement `types.RawQuerier` (`RawQuery()`, the URL's raw
+query), `types.RawQuery(req)` falls back to the queries encoded again on other platforms, and a DTO field tagged
+`raw:"query"` (a string) receives it. Tests: `tests/input_raw_query_test.go`.
+
+---
+
 ## Not a bug, but easy to trip over
 
 - **Single-instance CLI apps take the raw argument list; multi-instance apps take `cli <command>`.**
