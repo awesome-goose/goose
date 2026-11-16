@@ -9,12 +9,17 @@ import (
 )
 
 type Config struct {
-	Dialect  string
-	Host     string
-	Port     int
-	User     string
-	Pass     string
-	Name     string
+	Dialect string
+	Host    string
+	Port    int
+	User    string
+	Pass    string
+	Name    string
+	// Sync is ignored: there is no struct-based auto-migration in this module
+	// (schema changes are hand-written Migrations). Setting it to true logs a
+	// warning at startup so the no-op is never silent.
+	//
+	// Deprecated: remove this field; use Migrations.
 	Sync     bool
 	Log      bool
 	SSLMode  string
@@ -63,6 +68,9 @@ func WithName(name string) Option {
 	}
 }
 
+// WithSync sets Config.Sync, which has no effect.
+//
+// Deprecated: there is no auto-migration; use Migrations.
 func WithSync(sync bool) Option {
 	return func(c *Config) {
 		c.Sync = sync

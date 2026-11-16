@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	stderrors "errors"
 	"fmt"
@@ -104,13 +105,59 @@ func (a *App) Shutdown() error {
 }
 
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ctx := NewContext(w, r)
+	tw := &trackedWriter{ResponseWriter: w}
+	ctx := NewContext(tw, r)
 	err := a.fn(ctx)
 	if err != nil {
+		// A middleware or handler may already have written a complete
+		// response (e.g. an auth middleware writing its own 401 envelope)
+		// and returned an error only to stop the chain. Writing again would
+		// emit a superfluous WriteHeader and append the error text to that
+		// response's body.
+		if tw.wrote {
+			return
+		}
 		http.Error(w, err.Error(), statusFor(err))
 		return
 	}
 }
+
+// trackedWriter records whether anything was written to the response while
+// preserving the optional interfaces handlers rely on (SSE flushing,
+// WebSocket hijacking).
+type trackedWriter struct {
+	http.ResponseWriter
+	wrote bool
+}
+
+func (t *trackedWriter) WriteHeader(code int) {
+	t.wrote = true
+	t.ResponseWriter.WriteHeader(code)
+}
+
+func (t *trackedWriter) Write(b []byte) (int, error) {
+	t.wrote = true
+	return t.ResponseWriter.Write(b)
+}
+
+func (t *trackedWriter) Flush() {
+	if f, ok := t.ResponseWriter.(http.Flusher); ok {
+		t.wrote = true
+		f.Flush()
+	}
+}
+
+func (t *trackedWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := t.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("api: underlying ResponseWriter does not support hijacking")
+	}
+	t.wrote = true
+	return h.Hijack()
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (t *trackedWriter) Unwrap() http.ResponseWriter { return t.ResponseWriter }
 
 // statusFor maps a kernel error to the HTTP status a caller should see.
 // errors.ErrRouteNotFound — what core/router.go returns for a path with no

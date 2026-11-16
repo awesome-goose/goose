@@ -7,7 +7,6 @@ import (
 	"github.com/awesome-goose/goose/errors"
 	"github.com/awesome-goose/goose/types"
 	"gorm.io/driver/mysql"
-	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	gormLogger "gorm.io/gorm/logger"
@@ -19,9 +18,11 @@ type sqlModule struct {
 	db     *Db
 
 	isRoot bool
+	booted bool
 }
 
 func NewModule(config *Config, isRoot bool) *sqlModule {
+	moduleCreated()
 	return &sqlModule{config: config, isRoot: isRoot}
 }
 
@@ -104,10 +105,17 @@ func (m *sqlModule) Boot(k types.Kernel) error {
 		}
 	}
 
+	if !m.booted {
+		m.booted = true
+		moduleBooted()
+	}
 	return nil
 }
 
 func (m *sqlModule) initialize(log types.Log) *Db {
+	if m.config.Sync {
+		log.Warning("sql: Config.Sync / WithSync is deprecated and has no effect (there is no auto-migration; schema changes are Migrations)")
+	}
 	dialect := m.config.Dialect
 	if dialect == "" {
 		dialect = "postgres"
@@ -133,7 +141,7 @@ func (m *sqlModule) initialize(log types.Log) *Db {
 	case "postgres":
 		fallthrough
 	default:
-		dialector = postgres.Open(PostgresDSN(m.config))
+		dialector = postgresDialector(PostgresDSN(m.config), m.config.TimeZone)
 		tablePrefix = PostgresSchema(m.config) + "."
 	}
 

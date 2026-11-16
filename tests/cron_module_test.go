@@ -2,6 +2,8 @@ package tests
 
 import (
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -146,4 +148,89 @@ func (s *CronModuleShutdownSuite) TestKernelShutdownStopsTheRunner() {
 	})).ToBeNil()
 
 	s.T.Expect(runner.IsRunning()).ToEqual(false)
+}
+
+// Two cron modules in one app (a Root and a Child, or two Childs): both boot and call Start on the one *Cron, in
+// whatever order. Start used to return at once when the runner was already running, so the second module's
+// handlers were silently dropped and never ran.
+type twoCronModules struct{ dbPath string }
+
+func (m *twoCronModules) Imports() []types.Module {
+	return []types.Module{
+		sql.Root(&sql.Config{Dialect: "sqlite", Name: m.dbPath}),
+		cron.Child(cron.NewSimpleHandler("first", "job", "* * * * *", func(job *cron.CronJob) (any, error) { return nil, nil })),
+		&secondCronModule{},
+	}
+}
+func (m *twoCronModules) Exports() []any      { return nil }
+func (m *twoCronModules) Declarations() []any { return nil }
+
+type secondCronModule struct{}
+
+func (m *secondCronModule) Imports() []types.Module {
+	return []types.Module{
+		cron.Child(cron.NewSimpleHandler("second", "job", "*/5 * * * *", func(job *cron.CronJob) (any, error) { return nil, nil })),
+	}
+}
+func (m *secondCronModule) Exports() []any      { return nil }
+func (m *secondCronModule) Declarations() []any { return nil }
+
+func TestCronModulesShareOneRunner(t *testing.T) {
+	test.NewSuiteRunner(t, &CronModulesShareSuite{}).Run()
+}
+
+type CronModulesShareSuite struct {
+	test.Suite
+}
+
+// recordingLog keeps what the cron runner says.
+type recordingLog struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+func (l *recordingLog) add(m string) { l.mu.Lock(); l.seen = append(l.seen, m); l.mu.Unlock() }
+func (l *recordingLog) lines() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.seen...)
+}
+func (l *recordingLog) Debug(m string, _ ...any)     { l.add(m) }
+func (l *recordingLog) Info(m string, _ ...any)      { l.add(m) }
+func (l *recordingLog) Notice(m string, _ ...any)    { l.add(m) }
+func (l *recordingLog) Warning(m string, _ ...any)   { l.add(m) }
+func (l *recordingLog) Error(m string, _ ...any)     { l.add(m) }
+func (l *recordingLog) Critical(m string, _ ...any)  { l.add(m) }
+func (l *recordingLog) Alert(m string, _ ...any)     { l.add(m) }
+func (l *recordingLog) Emergency(m string, _ ...any) { l.add(m) }
+
+// One runner starts with one module's handlers and the other module's are added to it, in whichever order the
+// boot hooks ran. (Whether a handler's job row persists is the database's business: on SQLite the TIMESTAMP(6)
+// columns don't scan into time.Time, a separate matter, so this asserts on what the runner says it did.)
+func (s *CronModulesShareSuite) TestEveryModulesHandlersRun() {
+	rec := &recordingLog{}
+	traverser := core.NewTraverser()
+	s.T.Require(traverser.Container().Register(func() types.Log { return rec }, "", true)).ToBeNil()
+	s.T.Require(traverser.Traverse(&twoCronModules{dbPath: filepath.Join(s.T.T().TempDir(), "cron-two.db")})).ToBeNil()
+	k := &fakeKernel{traverser: traverser}
+	s.T.Require(traverser.OnBootHooks().ExecuteAll(func(fn func(types.Kernel) error) error { return fn(k) })).ToBeNil()
+	info, err := k.Registry().Get(&cron.Cron{})
+	s.T.Require(err).ToBeNil()
+	defer info.Instance.(*cron.Cron).Stop()
+
+	count := func(prefix string) int {
+		n := 0
+		for _, l := range rec.lines() {
+			if strings.HasPrefix(l, prefix) {
+				n++
+			}
+		}
+		return n
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for count("Cron runner started with 1 handlers")+count("Cron runner added 1 handlers") < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	s.T.Expect(count("Cron runner started with 1 handlers")).ToBe(1)
+	s.T.Expect(count("Cron runner added 1 handlers")).ToBe(1)
 }

@@ -6,5 +6,6 @@ import "github.com/awesome-goose/goose/modules/sql"
 func Migrations() []sql.Migration {
 	return []sql.Migration{
 		&CreateKVStoreTable{},
+		&UniqueGroupKey{},
 	}
 }

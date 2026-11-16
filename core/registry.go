@@ -2,6 +2,7 @@ package core
 
 import (
 	"reflect"
+	"sort"
 	"sync"
 	"unsafe"
 
@@ -51,6 +52,17 @@ type Registry struct {
 	// modules — coexist in the same tree without being conflated.
 	moduleRegistry map[types.Module]*resolvedModule
 
+	// moduleOrder records modules in the order they were processed, which is
+	// the topological order (dependencies before dependents). Map iteration
+	// is randomized in Go, so anything that must be deterministic — Boot and
+	// Shutdown hook collection above all — iterates this instead.
+	moduleOrder []types.Module
+
+	// declSeq gives every declaration type a creation sequence number so
+	// ListDeclarations can return a stable order.
+	declSeq     map[reflect.Type]int
+	declCounter int
+
 	// globalDeclarations holds all globally available declarations
 	globalDeclarations map[reflect.Type]*types.DeclarationInfo
 
@@ -79,6 +91,7 @@ func NewRegistry(container *Container) *Registry {
 		moduleRegistry:     make(map[types.Module]*resolvedModule),
 		globalDeclarations: make(map[reflect.Type]*types.DeclarationInfo),
 		declarationIndex:   make(map[reflect.Type]*types.DeclarationInfo),
+		declSeq:            make(map[reflect.Type]int),
 		moduleImports:      make(map[types.Module][]types.Module),
 	}
 }
@@ -259,6 +272,8 @@ func (r *Registry) processModule(mod types.Module) error {
 
 		rm.ownDeclarations[declType] = info
 		r.declarationIndex[declType] = info
+		r.declSeq[declType] = r.declCounter
+		r.declCounter++
 
 		// Track global declarations
 		if isGlobal {
@@ -297,6 +312,7 @@ func (r *Registry) processModule(mod types.Module) error {
 	}
 
 	r.moduleRegistry[mod] = rm
+	r.moduleOrder = append(r.moduleOrder, mod)
 	return nil
 }
 
@@ -457,10 +473,9 @@ func (r *Registry) ListModules() []types.Module {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	modules := make([]types.Module, 0, len(r.moduleRegistry))
-	for _, rm := range r.moduleRegistry {
-		modules = append(modules, rm.module)
-	}
+	// Topological order (dependencies first), never map order.
+	modules := make([]types.Module, len(r.moduleOrder))
+	copy(modules, r.moduleOrder)
 	return modules
 }
 
@@ -478,6 +493,10 @@ func (r *Registry) ListDeclarations(module types.Module) ([]*types.DeclarationIn
 	for _, info := range rm.availableDeclarations {
 		declarations = append(declarations, info)
 	}
+	// Stable order: by creation sequence, not map iteration order.
+	sort.SliceStable(declarations, func(i, j int) bool {
+		return r.declSeq[declarations[i].Type] < r.declSeq[declarations[j].Type]
+	})
 	return declarations, nil
 }
 

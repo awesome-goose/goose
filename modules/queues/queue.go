@@ -389,17 +389,20 @@ func (q *Queue) Pop(queueName string, jobName string) (*QueueJob, error) {
 		queueName = q.queueName()
 	}
 
-	// Get the queue
+	// Get the queue. Workers poll here before anything was ever pushed, so a
+	// missing queue is the idle state, not a failed query: Find, not First,
+	// which would log "record not found" on every poll.
 	var existingQueue QueueQueue
-	err := q.db.DB.Where("name = ?", queueName).First(&existingQueue).Error
-	if err != nil {
-		if stderrors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil // No queue found, return nil
-		}
-		return nil, err
+	found := q.db.DB.Where("name = ?", queueName).Limit(1).Find(&existingQueue)
+	if found.Error != nil {
+		return nil, found.Error
+	}
+	if found.RowsAffected == 0 {
+		return nil, nil // No queue found, return nil
 	}
 
 	var poppedJob *QueueJob
+	var err error
 	now := time.Now().UTC()
 
 	// Use transaction with row-level locking. SKIP LOCKED is only supported
@@ -746,13 +749,32 @@ func (q *Queue) Process(handler *JobHandler) {
 
 	key := workerKey(queueName, jobName)
 
-	// Spawn initial workers
-	for i := 0; i < min; i++ {
-		q.spawnWorker(key, queueName, jobName, fn, min, pollMs, idleThreshold, timeoutMs, useExpBackoff)
+	start := func() {
+		// Spawn initial workers
+		for i := 0; i < min; i++ {
+			q.spawnWorker(key, queueName, jobName, fn, min, pollMs, idleThreshold, timeoutMs, useExpBackoff)
+		}
+		// Start auto-scaler goroutine
+		go q.autoScaler(key, queueName, jobName, fn, min, max, pollMs, idleThreshold, timeoutMs, useExpBackoff)
 	}
-
-	// Start auto-scaler goroutine
-	go q.autoScaler(key, queueName, jobName, fn, min, max, pollMs, idleThreshold, timeoutMs, useExpBackoff)
+	// Workers poll the queue tables: before the sql modules have migrated (a handler wired
+	// before Boot, on a fresh database) they would query tables that don't exist yet and log an
+	// error per poll (BUGS #26). Wait for sql.Ready; when it is already closed, start now, as before.
+	if ready := sql.Ready(); sql.IsReady() {
+		start()
+	} else {
+		go func() {
+			// a module that never boots must not stop the queue for good: after a minute,
+			// start as before
+			select {
+			case <-ready:
+			case <-time.After(time.Minute):
+			}
+			if !q.isShuttingDown.Load() {
+				start()
+			}
+		}()
+	}
 }
 
 // spawnWorker creates a new worker goroutine

@@ -311,7 +311,9 @@ kv.NewModule(&kv.Config{
 ```
 
 `*kv.KV` exposes `Get/Set/SetNX/GetSet/Del/TTL/Expire/Persist/Exists/Keys/Incr/IncrBy`.
-It is not a Redis client — it persists through the SQL module's connection.
+It is not a Redis client — it persists through the SQL module's connection. `(group, key)` is unique, and
+`Set`, `SetNX`, `GetSet`, `Incr` and `IncrBy` lock the key's row, so concurrent increments from any number of
+processes are exact.
 
 ---
 

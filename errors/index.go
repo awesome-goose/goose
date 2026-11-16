@@ -61,14 +61,32 @@ func (e *Error) As(target any) bool {
 	return errors.As(e, target)
 }
 
-func (e *Error) WithMeta(meta any) *Error {
-	e.Meta = meta
-	return e
+// clone returns a shallow copy of e, so the With* methods never change the
+// receiver. The package-level sentinels (ErrRecordNotFound, ...) are shared by
+// every request: changing one in place let concurrent requests overwrite each
+// other's wrapped error and meta (a data race; one request's detail could show
+// up in another's response or log). errors.Is still matches a copy, since it
+// compares Code.
+func (e *Error) clone() *Error {
+	if e == nil {
+		return &Error{}
+	}
+	c := *e
+	return &c
 }
 
+// WithMeta returns a copy of e carrying meta; e itself is unchanged.
+func (e *Error) WithMeta(meta any) *Error {
+	c := e.clone()
+	c.Meta = meta
+	return c
+}
+
+// WithError returns a copy of e wrapping err; e itself is unchanged.
 func (e *Error) WithError(err error) *Error {
-	e.Err = err
-	return e
+	c := e.clone()
+	c.Err = err
+	return c
 }
 
 func (e *Error) String() string {
@@ -110,12 +128,16 @@ func (e *Error) GetSuggestedAction() string {
 	return e.SuggestedAction
 }
 
+// WithDetail returns a copy of e with detail; e itself is unchanged.
 func (e *Error) WithDetail(detail string) *Error {
-	e.Detail = detail
-	return e
+	c := e.clone()
+	c.Detail = detail
+	return c
 }
 
+// WithSuggestedAction returns a copy of e with action; e itself is unchanged.
 func (e *Error) WithSuggestedAction(action string) *Error {
-	e.SuggestedAction = action
-	return e
+	c := e.clone()
+	c.SuggestedAction = action
+	return c
 }

@@ -14,8 +14,8 @@ type KVStore struct {
 	CreatedAt *time.Time      `gorm:"index;column:created_at;type:timestamp(6);not null"`
 	UpdatedAt *time.Time      `gorm:"index;column:updated_at;type:timestamp(6);not null"`
 	DeletedAt *time.Time      `gorm:"index;column:deleted_at;type:timestamp(6)"`
-	Group     string          `gorm:"column:group;type:varchar(255);not null;index:idx_kv_group_key"`
-	Key       string          `gorm:"column:key;type:varchar(255);not null;index:idx_kv_group_key"`
+	Group     string          `gorm:"column:group;type:varchar(255);not null;uniqueIndex:idx_kv_group_key_unique"`
+	Key       string          `gorm:"column:key;type:varchar(255);not null;uniqueIndex:idx_kv_group_key_unique"`
 	Value     json.RawMessage `gorm:"column:value;type:jsonb"`
 	ExpiredAt *time.Time      `gorm:"index;column:expired_at;type:timestamp(6)"`
 	Meta      json.RawMessage `gorm:"column:meta;type:jsonb"`

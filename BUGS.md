@@ -263,7 +263,7 @@ Apps carrying the `ngx-apps/projects/spaces` workaround (reading
 
 ---
 
-## 6. Module `Boot()` hooks run in non-deterministic order — OPEN
+## 6. Module `Boot()` hooks run in non-deterministic order — FIXED
 
 **File:** `core/traverser.go:53-56` (`collectHooks`), `core/registry.go:433-442`
 (`ListModules`), `core/registry.go:445-459` (`ListDeclarations`).
@@ -334,9 +334,20 @@ migrated table) run enough times to catch the non-determinism, or a
 deterministic repro that inspects `onBootStack`'s built order directly
 instead of relying on the random map to misbehave.
 
+**Fix applied (2026-10-09):** `Registry` now records modules in processing
+(topological) order and gives each declaration a creation sequence;
+`ListModules`/`ListDeclarations` return that order instead of map order.
+`collectHooks` pushes hooks so that, under the stack's LIFO execution,
+dependencies boot before the modules that import them and a module's own
+declarations boot before the module (shutdown is the exact mirror). Each
+instance's hooks are registered once, by the module that owns it.
+Regression tests: `core/boot_order_test.go` (dependency order, shutdown
+mirror, and 300 repeated traversals that must yield one identical order — it
+fails on the old code).
+
 ---
 
-## 7. `sql.Config.Sync` / `WithSync` is dead code — OPEN
+## 7. `sql.Config.Sync` / `WithSync` is dead code — FIXED (deprecated)
 
 **File:** `modules/sql/types.go:18` (field), `types.go:68` (`WithSync` option).
 
@@ -375,6 +386,11 @@ over the module's own declared entities, if that's the intended behavior) or
 remove the field/option entirely and let the compiler catch existing
 callers — a silently-ignored bool is worse than a missing one.
 
+
+**Fix applied (2026-10-09):** the field and option are kept for source
+compatibility (other projects set them) but marked `Deprecated`, and setting
+`Sync: true` now logs a warning at startup, so the no-op is never silent.
+Remove the field in the next breaking release.
 ---
 
 ## 8. `modules/sql` built the Postgres DSN without quoting, so an empty password broke the connection — FIXED
@@ -529,6 +545,275 @@ one) so tests can drive `ServeHTTP` directly without a live listener. Regression
 `tests/web_platform_test.go`, `tests/api_platform_test.go`, and two new cases in
 `tests/spa_platform_test.go` (`TestAPIRouteNotFoundIs404`, `TestAPIOtherErrorsStayInternalServerError`)
 — each confirmed to fail (500 instead of 404) against the unfixed code.
+
+---
+
+## 14. `platforms/api` wrote a second response after a middleware had already answered — FIXED
+
+**File:** `platforms/api/app.go` (`App.ServeHTTP`).
+
+A middleware may answer a request itself and return an error only to stop the chain; scaffold's
+`AuthMiddleware` does exactly this for a 401 (writes its JSON envelope, then returns a sentinel).
+`ServeHTTP` treated every non-nil error as "nothing written yet" and called `http.Error`, so the
+response got a second `WriteHeader` (`http: superfluous response.WriteHeader call` in the log) and
+the error text appended to the JSON body (`{"success":false,...}ROUTE_NOT_FOUND: ...`).
+
+**Fix applied:** the response writer is wrapped to record whether anything was written (keeping
+`Flusher`, `Hijacker` and `Unwrap`, which SSE and WebSocket upgrades rely on); when the handler
+already responded, the error is not written again. Regression test:
+`tests/api_written_response_test.go` — fails against the unfixed code.
+
+---
+
+## 15. `utils/path.AppRoot` failed for a built binary, aborting boot — FIXED
+
+**File:** `utils/path/base.go`.
+
+`AppRoot` only found a directory by walking up from the executable and the working directory
+looking for `go.mod`. A deployed binary has no `go.mod` above it, so `AppRoot` returned
+`os.ErrNotExist`, the default config service failed to register, and the process exited with
+`SERVICE_REGISTRATION_ERROR ... file does not exist`. The root is only used to find optional
+resources (`config/`, `lang/`), so this should never be fatal.
+
+**Fix applied:** resolution is now `APP_ROOT`, then the nearest `go.mod` (unchanged), then the
+working directory. Regression tests: `tests/path_app_root_test.go`.
+
+---
+
+## 16. `platforms/spa` answered twice after a middleware responded, and bodyless statuses became 500s — FIXED
+
+**Files:** `platforms/spa/app.go` (`serveAPI`), `platforms/api/response.go` (`Response.Write`).
+
+Two related defects, both visible as `http: superfluous response.WriteHeader call` in the log:
+
+1. `spa.serveAPI` repeated the #14 mistake: a middleware that wrote its own 401 and returned an error to
+   stop the chain got `http.Error` appended to its body. The api platform was fixed; the SPA platform was not.
+2. `Response.Write` wrote the JSON body for every status. For `304`, `204` and `1xx` net/http refuses
+   (`ErrBodyNotAllowed`), the error propagated, and the platform turned it into a second 500 response. A
+   conditional GET answering `304` therefore logged a fault on every poll.
+
+**Fix applied:** `serveAPI` tracks whether the response started (reusing the package's `trackedWriter`)
+and does not write again; `Response.Write` skips the body for statuses that cannot carry one.
+Regression tests: `tests/spa_written_response_test.go`, `TestAPIBodylessStatusesDoNotWriteABody`.
+
+---
+
+## 17. A second cron module's handlers never ran — FIXED
+
+**Files:** `modules/cron/cron.go` (`Cron.Start`).
+
+`cron.Child` promises "register additional cron handlers", but every cron module's `Boot` calls `Start` on the
+one `*Cron`, and `Start` returned at once when the runner was already running. Whichever cron module booted
+second (a `Child` after the `Root`, or the `Root` after a `Child`, since boot-hook order across modules isn't
+fixed) had its handlers silently dropped. Seen in Yan: a library's `cron.Child` tick next to the scaffold cron
+app's `Root` never fired, and the log still said "Cron runner started with 6 handlers".
+
+**Fix applied:** `Start` on a running runner registers the extra handlers on it (`addHandlers`, logged as "Cron
+runner added N handlers"). Additive: `Cron.HasHandler(group, name)`. Regression test:
+`TestCronModulesShareOneRunner` (fails without the fix).
+
+Seen while testing it, not fixed here: on SQLite the cron tables' `TIMESTAMP(6)` columns come back as strings
+(the driver only parses a declared type of exactly `timestamp`), so `Register` fails to read the job back and
+every handler is skipped. Postgres is unaffected. Changing the DDL would alter MySQL's precision and semantics,
+so it needs its own decision.
+
+---
+
+## 18. Error sentinels were changed per request (a data race) — FIXED
+
+**Files:** `errors/index.go` (`WithError`, `WithMeta`, `WithDetail`, `WithSuggestedAction`).
+
+The package-level sentinels (`ErrFailedToHydrateInput`, `ErrRecordNotFound`, ...) are shared by every
+request, and the `With*` methods set a field on the receiver and returned it. `kernel.go` returns
+`errors.ErrFailedToHydrateInput.WithError(err)` per request, so concurrent requests overwrote each other's
+wrapped error: a data race, and one request's detail could show up in another's response or log. Found by Yan
+(PLAN U16).
+
+**Fix applied:** the `With*` methods return a copy and leave the receiver alone. `errors.Is` still matches
+(it compares `Code`), and no caller in Goose, scaffold or Yan used them for their side effect. The old tests
+that asserted "returns the same pointer" now assert the copy. Regression test:
+`TestSentinelWithIsSafeConcurrently` (reports a DATA RACE under `-race` without the fix).
+
+---
+
+## 19. Nothing reported what an Entity wrote, so no `apps.db.*` event ever fired — FIXED (additive)
+
+**Files:** `modules/sql/changes.go` (new), `modules/sql/entity.go`, `modules/sql/query.go`.
+
+The scaffold libraries were ported from TS, where the repository published `apps.db.<table>.after-insert`,
+`after-update` and `after-delete` on every write, and their `Subscriptions` still listen for them (identity
+seeds a workspace's roles and alerts on a new device, capital opens a wallet, audit logs). In Go nothing
+published them: `sql.Entity` had per-entity hooks only, so there was no process-wide way to see a write. Found
+by Yan (PLAN U12): no `identity.user.created`.
+
+**Added:** `sql.ObserveChanges(fn) (remove func())`. Every `Entity.Insert`, `Upsert`, `Update` and `Delete`
+reports a `ChangeEvent{Table, Action, Record, Query, Args}` once it succeeds: the inserted row with its id; for
+an update, each touched row as it is afterwards (ids noted before the update, rows read after, at most 1000);
+for a delete, the deleted row(s). Inside `Entity.Tx` and `Query.Tx` (and an `Entity.With` that Tx's `Query`)
+events wait for the commit and are dropped on rollback; a nested Tx hands them to the outer one. With no
+observer registered, writes do no extra work. Rows written with gorm directly are not reported. scaffold
+`core/events/dbevents` turns these into bus events. Tests: `tests/sql_changes_test.go`.
+
+---
+
+## 20. A wrong app root silently loaded no `.env`, so the app ran on defaults — FIXED (additive)
+
+**Files:** `utils/path/base.go` (`ResolveAppRoot`), `env/sources/file.go`.
+
+`AppRoot` takes the first `go.mod` above the executable. A binary built into another module's directory (a
+`bin/` inside some other checkout) therefore resolved to that module, found no `.env` there, and the file
+source returned without a word: the app started on defaults, `DB_NAME=yan` included, and ran migrations on a
+shared database. Found by Yan (lane 3, 2026-11-09).
+
+**Fix applied (non-breaking):** resolution order is unchanged. `path.ResolveAppRoot()` also says which rule
+picked the root. The `.env` loader now (1) warns on stderr when the file is missing, naming the path and the
+rule, with the fix (`APP_ROOT`); (2) reads `GOOSE_ENV_FILE` instead of `<root>/.env` when set, and stops the
+process (exit 78, EX_CONFIG) if that file is missing; (3) stops the process on a missing file when
+`GOOSE_ENV_FILE_REQUIRED=true`; (4) stays quiet with `GOOSE_ENV_FILE=-` (configured by the real environment on
+purpose). Products that keep a `.env` at the root or set `APP_ROOT` see no change. Tests:
+`env/sources/file_internal_test.go`, `TestResolveAppRootSaysHow`.
+
+---
+
+## 21. JSON numbers above 2^53 were rounded before they reached a DTO — FIXED
+
+**Files:** `io/input/index.go`.
+
+The binder decoded a JSON body into `map[string]any`, so every number went through float64: an `int64`,
+`uint64`, `string` or struct field (or a `json.RawMessage` re-marshalled from the map) got
+9007199254740993 as 9007199254740992. Money in minor units and chain amounts (wei) were silently changed. Found
+by Yan (lane 2).
+
+**Fix applied (non-breaking):** the body is decoded with `UseNumber` (still nothing allowed after the value, as
+`json.Unmarshal` required); integer, unsigned, string, `json.Number`, slice, map and struct fields get the exact
+value. Fields typed `any`, `map[string]any`, `[]any` or `props.Props` still receive float64s, as before, so
+handlers that type-assert `float64` see no change. **Also added:** `headers:"all"` hands a DTO every request
+header (`map[string]string` or `map[string][]string`, a copy), for webhook receivers that verify a signature
+header. Tests: `tests/input_numbers_headers_test.go`.
+
+---
+
+## 22. Migrations and seeders are recorded by `%T`, once per database — PARTLY ADDRESSED (additive)
+
+**Files:** `modules/sql/runner.go`.
+
+A migration or seeder is recorded as `fmt.Sprintf("%T", m)`, e.g. `*migrations.CreateLogs`: the package name
+without its path. Two libraries that each have a `migrations` package with the same type name collide, and the
+second one never runs. Seeders run once per database by the same record, so reference data added later (a new
+currency, a new topic) never reaches a database that was seeded before. Found by Yan (lane 2).
+
+**Added, not changed:** renaming recorded entries would re-run every existing migration, so `%T` stays the
+default. A migration or seeder may implement `Named` (`MigrationName() string`) to choose a qualified name
+(`"wallet/seed-currencies@2"`: a new version of reference data under a new name runs once more), or
+`Repeatable` (`Repeat() bool`) to run on every boot (idempotent reference data). `sql.RecordName(m)` reports the
+name. Test: `TestSQLMigrateNamedAndRepeatable`. **Still open:** existing same-named pairs across libraries are
+not detected; a boot-time check that warns on duplicate record names would catch them.
+
+---
+
+## 23. Postgres `timestamptz` values came back in the machine's time zone — FIXED
+
+**Files:** `modules/sql/timezone.go`, `modules/sql/module.go`; `go.mod` (pgx v5.7.1).
+
+`Config.TimeZone` set the session time zone and `NowFunc`, but pgx scans a `timestamptz` into `time.Local`
+whatever the session says. On a machine at +01:00 a row's `createdAt` was `2026-11-10T19:28:12+01:00` for
+columns created as `timestamptz` and `...18:28:12Z` for plain `timestamp` ones, so one API mixed offsets and
+broke a contract that asks for UTC (Yan TRD §7.6). Found by Yan (U25).
+
+**Fix applied (non-breaking):** with a `TimeZone` set, Postgres connections register pgx's `timestamptz`
+codec with `ScanLocation` in that zone (the zone `NowFunc` already writes in). The instant never changes,
+only the offset it is printed with. No `TimeZone` keeps the old behaviour. Needs pgx v5.7 or later (the
+`ScanLocation` field), so Goose now requires v5.7.1. Test: `TestTimestamptzScansInTheConfiguredZone`
+(real Postgres, `GOOSE_TEST_DB_HOST`).
+
+---
+
+## 24. The served OpenAPI document named operations by registration order — FIXED (additive)
+
+**Files:** `openapi/build.go`, `openapi/ids.go`.
+
+`operationId` is the handler's method name, de-duplicated by the tag, then by method and path, in the order
+routes registered. Two handlers named `List` got different ids from one boot to the next, so a host had to
+rewrite every id in a script to commit a stable document, and the document it served still had the old ids
+(found by Yan, U25).
+
+**Added:** `Options.OperationID func(method, path, handler string) string` names every operation (a clash is
+an error), and `PathOperationID(skip...)` derives the id from the method and path only, title-casing each
+word as Python's `str.title()` does: `GET /api/apps/social/posts/{id}` is `getSocialPostsById`. Also added for
+typed responses: `Operation.Request` (the JSON body of a handler that reads the body itself),
+`ControllerDocumented` (a controller documents its own handler methods, for generic resources whose shared
+Dtos cannot name the entity) and `Page[T]` (the shared `{items, next}` page). Without the new options the
+document is unchanged. Tests: `openapi/operation_ids_test.go`.
+
+---
+
+## 25. A handler could not learn the client's address — FIXED (additive)
+
+**Files:** `types/clientip.go`, `platforms/api/request.go`, `platforms/web/request.go`.
+
+`types.Request` has headers but no peer address, so nothing behind a Goose server knew who was calling: scaffold
+core read the address from `X-Forwarded-For` only (spoofable, and with a lookup that never matched canonical
+keys), every identity login-attempt row had an empty address, and each per-address limit was one global bucket
+(10 sign-ups an hour for the whole of Yan; one script could block them all). Found by Yan (lane 2).
+
+**Added:** the api, web and spa requests implement `types.RemoteAddresser` (`RemoteAddr()`, net/http's peer);
+`types.RemoteAddr(req)` is "" for a platform without one, so the `Request` interface is unchanged.
+`types.ClientIP(req, trusted)` is the peer address unless the peer is a trusted proxy; then `X-Forwarded-For`
+is read from the right, skipping trusted hops, with `X-Real-Ip` as the fallback. `types.ParsePrefixes` reads
+a CIDR list. Headers from an untrusted peer are never believed. Test: `tests/client_ip_test.go`.
+
+---
+
+## 26. Queue workers polled `QueueQueues` before the migrations had made it — FIXED
+
+**Files:** `modules/sql/ready.go`, `modules/sql/module.go`, `modules/queues/queue.go`.
+
+A library that wires its queue handlers before Boot (scaffold notification starts its workers when the pusher is
+wired) started polling at once. On a fresh database the root sql module had not migrated yet, so the first boot
+logged an ERROR per poll for a missing `"QueueQueues"` table. Found by Yan (lane 3).
+
+**Fix applied:** `sql.Ready()` is closed once every sql module (root and child) has run its migrations and seeders (closed
+from the start when there is none); queue workers wait on it before their first poll, and start at once, as
+before, when it is already closed. A module that never boots holds them back for at most a minute. Tests:
+`TestReadyClosesWhenEverySQLModuleHasMigrated`, the queue suite.
+
+**Also added (lane 3):** `sql.NewQuery(*gorm.DB)` and `sql.NewEntity[T](*Query)`, the supported way to build a
+Query or an Entity outside the container, for libraries' service-level tests (`(&sql.Query{}).With(&sql.Db{DB:
+db})` worked but was undocumented). Test: `TestNewQueryAndNewEntity`.
+
+---
+
+## 27. `kv` increments were lost under concurrency, and a key could get two rows — FIXED
+
+**Files:** `modules/kv/kv.go`, `modules/kv/entry.go`, `modules/kv/migrations/unique-group-key.go`.
+
+`IncrBy` read the row, added in Go and wrote the sum back inside a transaction with no row lock, and
+`("group", "key")` had a plain index, not a unique one. Two increments at once both read `n` and both wrote `n+1`;
+two first increments of a missing key each created a row, and later reads picked either. `SetNX` locked the row but
+could not lock one that did not exist yet, so two callers on a missing key could both create it. Found by Origine
+(U-G11): 40 goroutines × 25 increments ended at a value returned twice, and 4 processes ended at 74 of 1,600.
+
+**Fix applied:** a migration (`kv/unique-group-key`) removes duplicate rows (keeping the active row updated last) and
+makes `("group", "key")` unique. `Set`, `SetNX`, `GetSet` and `IncrBy` now take the key's one row with
+`INSERT … ON CONFLICT DO NOTHING` (a deleted placeholder when the key is new) and then `SELECT … FOR UPDATE`, so a
+second caller waits for the first. A deleted or expired key counts from 0 with no expiry; a live key keeps its expiry.
+SQLite skips `FOR UPDATE` (it serializes writers). Tests: `modules/kv/kv_incr_test.go` (goroutines and processes
+against Postgres with `GOOSE_TEST_DB_HOST`; unique index; the migration on duplicates; SQLite).
+
+---
+
+## 28. A handler could not read the query string as sent — FIXED (additive)
+
+**Files:** `types/rawquery.go`, `platforms/api/request.go`, `platforms/web/request.go`, `io/input/index.go`.
+
+A SAML HTTP-Redirect binding message is signed over the query string exactly as the sender encoded it
+(saml-bindings-2.0 §3.4.4.1): its percent escapes (ADFS writes lower-case ones) and its parameter order. A handler
+saw only the decoded `Queries()` map, so it could not check such a signature. Found by Origine (V4-03, SAML single
+logout).
+
+**Fix applied:** the api and web platforms' requests implement `types.RawQuerier` (`RawQuery()`, the URL's raw
+query), `types.RawQuery(req)` falls back to the queries encoded again on other platforms, and a DTO field tagged
+`raw:"query"` (a string) receives it. Tests: `tests/input_raw_query_test.go`.
 
 ---
 

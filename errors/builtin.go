@@ -540,6 +540,15 @@ var (
 		"Could not set the struct field from JSON data",
 		"Check field type compatibility with JSON value",
 	)
+	// ErrMissingRequiredFields is what binding returns when a request lacks a field tagged
+	// binding:"required". Its Meta is the missing fields' wire names ([]string), in field order;
+	// the kernel answers it with a 400 that names them.
+	ErrMissingRequiredFields = New(
+		"MISSING_REQUIRED_FIELDS",
+		"Missing required fields",
+		"The request lacks one or more fields tagged binding:\"required\"",
+		"Send every required field",
+	)
 	ErrUnsupportedSliceType = New(
 		"UNSUPPORTED_SLICE_TYPE",
 		"Unsupported slice element type",

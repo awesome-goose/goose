@@ -38,6 +38,12 @@ func (r *Response) Write(serialType types.SerialType, outputData []byte, statusC
 	}
 
 	r.raw.WriteHeader(statusCode)
+	// 1xx, 204 and 304 responses must not carry a body; writing one makes
+	// net/http return ErrBodyNotAllowed, which callers then (wrongly) turn
+	// into a second, 500 response.
+	if !bodyAllowed(statusCode) {
+		return nil
+	}
 	if len(outputData) > 0 {
 		_, err := r.raw.Write(outputData)
 		if err != nil {
@@ -63,4 +69,15 @@ func (r *Response) SetHeaders(headers map[string]string) {
 // Raw returns the underlying http.ResponseWriter
 func (r *Response) Raw() any {
 	return r.raw
+}
+
+// bodyAllowed reports whether a response with this status may have a body.
+func bodyAllowed(status int) bool {
+	switch {
+	case status >= 100 && status <= 199:
+		return false
+	case status == http.StatusNoContent, status == http.StatusNotModified:
+		return false
+	}
+	return true
 }

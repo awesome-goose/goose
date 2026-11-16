@@ -2,7 +2,10 @@ package sources
 
 import (
 	"bufio"
+	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/awesome-goose/goose/types"
@@ -15,16 +18,48 @@ func NewFileEnvSource() *fileEnvSource {
 	return &fileEnvSource{}
 }
 
-// Load reads the .env file and populates the Env store
-// Silently ignores missing .env files
+// Environment variables that steer the .env file (read from the real
+// environment only).
+const (
+	// EnvFileVar names the .env file to read instead of <app root>/.env. "-"
+	// means "no file, on purpose": nothing is read and nothing is reported.
+	EnvFileVar = "GOOSE_ENV_FILE"
+	// EnvFileRequiredVar, set to true, makes a missing or unreadable .env
+	// stop the process at start-up instead of running on defaults.
+	EnvFileRequiredVar = "GOOSE_ENV_FILE_REQUIRED"
+)
+
+// Seams for tests.
+var (
+	stderr io.Writer = os.Stderr
+	exit             = os.Exit
+)
+
+// Load reads the .env file and populates the Env store.
+//
+// The file is GOOSE_ENV_FILE when set, else <app root>/.env (utils/path). A
+// missing file is no longer silent: a binary whose app root resolved to the
+// wrong directory (built under another module's go.mod, say) would otherwise
+// run on default settings, database name included, without a word. Load
+// says on stderr which root it used and why. A GOOSE_ENV_FILE that is
+// missing, or any missing file with GOOSE_ENV_FILE_REQUIRED=true, ends the
+// process (exit status 78, EX_CONFIG). Deployments that configure through
+// the real environment only set GOOSE_ENV_FILE=- to skip the file quietly.
 func (v *fileEnvSource) Load(env types.Env) {
-	directory, err := path.AppRoot()
-	if err != nil {
+	envPath, explicit, why := locateEnvFile()
+	if envPath == "" {
 		return
 	}
-	envPath := directory + "/.env"
 	file, err := os.Open(envPath)
 	if err != nil {
+		required := explicit || strings.EqualFold(os.Getenv(EnvFileRequiredVar), "true")
+		if required {
+			fmt.Fprintf(stderr, "goose: cannot read the env file %s (%s): %v. Set APP_ROOT or %s to the right file.\n", envPath, why, err, EnvFileVar)
+			exit(78)
+			return
+		}
+		fmt.Fprintf(stderr, "goose: warning: no .env at %s (app root from %s); running on the process environment and defaults only. Set APP_ROOT or %s to point at it, %s=- if that is intended, or %s=true to refuse to start without it.\n",
+			envPath, why, EnvFileVar, EnvFileVar, EnvFileRequiredVar)
 		return
 	}
 	defer file.Close()
@@ -130,6 +165,26 @@ func (v *fileEnvSource) Load(env types.Env) {
 		value = expandVars(value, env)
 		setFromFile(env, key, value)
 	}
+}
+
+// locateEnvFile is the file Load reads, whether it was named explicitly, and
+// how it was chosen; "" means read nothing.
+func locateEnvFile() (envPath string, explicit bool, why string) {
+	if f, ok := os.LookupEnv(EnvFileVar); ok && f != "" {
+		if f == "-" {
+			return "", false, ""
+		}
+		return f, true, EnvFileVar
+	}
+	root, how, err := path.ResolveAppRoot()
+	if err != nil {
+		fmt.Fprintf(stderr, "goose: warning: the app root could not be resolved (%v); no .env read. Set APP_ROOT or %s.\n", err, EnvFileVar)
+		if strings.EqualFold(os.Getenv(EnvFileRequiredVar), "true") {
+			exit(78)
+		}
+		return "", false, ""
+	}
+	return filepath.Join(root, ".env"), false, how
 }
 
 // setFromFile stores a value read from the .env file, but only when the real

@@ -79,7 +79,8 @@ func (s *EnvFileSourceSuite) TestExplicitEmptyRealEnvVarIsNotOverridden() {
 	s.T.Expect(os.Getenv("DB_NAME")).ToEqual("")
 }
 
-func (s *EnvFileSourceSuite) TestMissingEnvFileIsSilentlyIgnored() {
+// A missing .env does not stop the app (it warns: env/sources tests).
+func (s *EnvFileSourceSuite) TestMissingEnvFileDoesNotStopTheApp() {
 	dir := s.T.T().TempDir()
 	s.T.Require(os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module scratch\n\ngo 1.25\n"), 0o644)).ToBeNil()
 	s.T.Require(os.Chdir(dir)).ToBeNil()

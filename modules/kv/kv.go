@@ -10,6 +10,7 @@ import (
 	"github.com/awesome-goose/goose/types"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // KV is the key-value store service with Redis-compatible methods
@@ -54,235 +55,142 @@ func (kv *KV) Get(key string) (any, error) {
 	return value, nil
 }
 
-// Set stores a value for a key with optional TTL.
-// Redis compatible: SET key value [EX seconds]
-func (kv *KV) Set(key string, value any, ttl ...time.Duration) error {
-	group := kv.group()
-
-	valueBytes, err := json.Marshal(value)
+// lockRow returns the one row for (group, key), locked until tx ends. A key
+// that has no row yet gets a deleted placeholder first (ON CONFLICT DO NOTHING
+// on the unique ("group", "key")), so there is always a row to lock: a second
+// caller waits on the first one's insert or lock instead of reading a stale
+// value or creating a second row (U-G11). SQLite serializes write transactions
+// and rejects FOR UPDATE, so the hint is skipped there.
+func lockRow(tx *gorm.DB, group, key string) (*KVStore, error) {
+	now := time.Now().UTC()
+	placeholder := &KVStore{
+		Id:        uuid.New().String(),
+		Group:     group,
+		Key:       key,
+		CreatedAt: &now,
+		UpdatedAt: &now,
+		DeletedAt: &now,
+		Status:    StatusDeleted,
+	}
+	err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "group"}, {Name: "key"}},
+		DoNothing: true,
+	}).Create(placeholder).Error
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	var expiredAt *time.Time
+	var store KVStore
+	query := tx.Where("\"group\" = ? AND \"key\" = ?", group, key)
+	if tx.Dialector.Name() != "sqlite" {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	if err := query.First(&store).Error; err != nil {
+		return nil, err
+	}
+	return &store, nil
+}
+
+// live reports whether a locked row holds a value: active and not expired.
+func (e *KVStore) live() bool {
+	return e.Status == StatusActive && (e.ExpiredAt == nil || e.ExpiredAt.After(time.Now().UTC()))
+}
+
+// expiry is the expiry a write with ttl gives a key: ttl, else the default TTL.
+func (kv *KV) expiry(ttl []time.Duration) *time.Time {
 	if len(ttl) > 0 && ttl[0] > 0 {
 		t := time.Now().UTC().Add(ttl[0])
-		expiredAt = &t
-	} else if kv.config != nil && kv.config.DefaultTTL > 0 {
-		t := time.Now().UTC().Add(kv.config.DefaultTTL)
-		expiredAt = &t
+		return &t
 	}
+	if kv.config != nil && kv.config.DefaultTTL > 0 {
+		t := time.Now().UTC().Add(kv.config.DefaultTTL)
+		return &t
+	}
+	return nil
+}
 
+// write stores value in the locked row and makes it active.
+func write(tx *gorm.DB, store *KVStore, value []byte, expiredAt *time.Time) error {
 	now := time.Now().UTC()
-
-	// Try to update existing store first
-	result := kv.db.DB.Model(&KVStore{}).
-		Where("\"group\" = ? AND \"key\" = ?", group, key).
+	return tx.Model(&KVStore{}).
+		Where("id = ?", store.Id).
 		Updates(map[string]any{
-			"value":      valueBytes,
+			"value":      value,
 			"expired_at": expiredAt,
 			"updated_at": &now,
 			"status":     StatusActive,
 			"deleted_at": nil,
-		})
+		}).Error
+}
 
-	if result.Error != nil {
-		return result.Error
+// Set stores a value for a key with optional TTL.
+// Redis compatible: SET key value [EX seconds]
+func (kv *KV) Set(key string, value any, ttl ...time.Duration) error {
+	valueBytes, err := json.Marshal(value)
+	if err != nil {
+		return err
 	}
-
-	// If no rows affected, create new store
-	if result.RowsAffected == 0 {
-		store := &KVStore{
-			Id:        uuid.New().String(),
-			Group:     group,
-			Key:       key,
-			Value:     valueBytes,
-			ExpiredAt: expiredAt,
-			CreatedAt: &now,
-			UpdatedAt: &now,
-			Status:    StatusActive,
+	expiredAt := kv.expiry(ttl)
+	return kv.db.DB.Transaction(func(tx *gorm.DB) error {
+		store, err := lockRow(tx, kv.group(), key)
+		if err != nil {
+			return err
 		}
-		return kv.db.DB.Create(store).Error
-	}
-
-	return nil
+		return write(tx, store, valueBytes, expiredAt)
+	})
 }
 
 // SetNX sets a key only if it does not already exist.
 // Redis compatible: SETNX key value
 // Returns true if key was set, false if key already exists.
 func (kv *KV) SetNX(key string, value any, ttl ...time.Duration) (bool, error) {
-	group := kv.group()
-
 	valueBytes, err := json.Marshal(value)
 	if err != nil {
 		return false, err
 	}
-
-	var expiredAt *time.Time
-	if len(ttl) > 0 && ttl[0] > 0 {
-		t := time.Now().UTC().Add(ttl[0])
-		expiredAt = &t
-	} else if kv.config != nil && kv.config.DefaultTTL > 0 {
-		t := time.Now().UTC().Add(kv.config.DefaultTTL)
-		expiredAt = &t
-	}
-
-	// Start a transaction with row-level locking
-	tx := kv.db.DB.Begin()
-	if tx.Error != nil {
-		return false, tx.Error
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-		}
-	}()
-
-	// Check if key exists with FOR UPDATE lock to prevent race conditions.
-	// SQLite serializes write transactions and rejects the hint, so skip it there.
-	var existing KVStore
-	query := tx.Where("\"group\" = ? AND \"key\" = ? AND status = ?", group, key, StatusActive)
-	if tx.Dialector.Name() != "sqlite" {
-		query = query.Set("gorm:query_option", "FOR UPDATE")
-	}
-	err = query.First(&existing).Error
-
-	if err == nil {
-		// Key exists, check if expired
-		if existing.ExpiredAt == nil || existing.ExpiredAt.After(time.Now().UTC()) {
-			tx.Rollback()
-			return false, nil // Key exists and is not expired
-		}
-		// Key is expired, we can overwrite it
-		now := time.Now().UTC()
-		err = tx.Model(&KVStore{}).
-			Where("id = ?", existing.Id).
-			Updates(map[string]any{
-				"value":      valueBytes,
-				"expired_at": expiredAt,
-				"updated_at": &now,
-				"status":     StatusActive,
-			}).Error
+	expiredAt := kv.expiry(ttl)
+	set := false
+	err = kv.db.DB.Transaction(func(tx *gorm.DB) error {
+		store, err := lockRow(tx, kv.group(), key)
 		if err != nil {
-			tx.Rollback()
-			return false, err
+			return err
 		}
-	} else if errors.Is(err, gorm.ErrRecordNotFound) {
-		// Key doesn't exist, create it
-		now := time.Now().UTC()
-		store := &KVStore{
-			Id:        uuid.New().String(),
-			Group:     group,
-			Key:       key,
-			Value:     valueBytes,
-			ExpiredAt: expiredAt,
-			CreatedAt: &now,
-			UpdatedAt: &now,
-			Status:    StatusActive,
+		if store.live() {
+			return nil
 		}
-		if err := tx.Create(store).Error; err != nil {
-			tx.Rollback()
-			return false, err
-		}
-	} else {
-		tx.Rollback()
+		set = true
+		return write(tx, store, valueBytes, expiredAt)
+	})
+	if err != nil {
 		return false, err
 	}
-
-	if err := tx.Commit().Error; err != nil {
-		return false, err
-	}
-
-	return true, nil
+	return set, nil
 }
 
 // GetSet atomically sets a key to a new value and returns the old value.
 // Redis compatible: GETSET key value
 func (kv *KV) GetSet(key string, value any, ttl ...time.Duration) (any, error) {
-	group := kv.group()
-
-	// Start a transaction
-	tx := kv.db.DB.Begin()
-	if tx.Error != nil {
-		return nil, tx.Error
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-		}
-	}()
-
-	// Get the old value
-	var oldStore KVStore
-	err := tx.Where("\"group\" = ? AND \"key\" = ? AND status = ?", group, key, StatusActive).First(&oldStore).Error
-	var oldValue any
-	if err == nil {
-		// Check if expired
-		if oldStore.ExpiredAt == nil || oldStore.ExpiredAt.After(time.Now().UTC()) {
-			if err := json.Unmarshal(oldStore.Value, &oldValue); err != nil {
-				tx.Rollback()
-				return nil, err
-			}
-		}
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		tx.Rollback()
-		return nil, err
-	}
-
-	// Set the new value
 	valueBytes, err := json.Marshal(value)
 	if err != nil {
-		tx.Rollback()
 		return nil, err
 	}
-
-	var expiredAt *time.Time
-	if len(ttl) > 0 && ttl[0] > 0 {
-		t := time.Now().UTC().Add(ttl[0])
-		expiredAt = &t
-	} else if kv.config != nil && kv.config.DefaultTTL > 0 {
-		t := time.Now().UTC().Add(kv.config.DefaultTTL)
-		expiredAt = &t
-	}
-
-	now := time.Now().UTC()
-
-	if oldStore.Id != "" {
-		// Update existing store
-		err = tx.Model(&KVStore{}).
-			Where("id = ?", oldStore.Id).
-			Updates(map[string]any{
-				"value":      valueBytes,
-				"expired_at": expiredAt,
-				"updated_at": &now,
-				"status":     StatusActive,
-				"deleted_at": nil,
-			}).Error
-	} else {
-		// Create new store
-		store := &KVStore{
-			Id:        uuid.New().String(),
-			Group:     group,
-			Key:       key,
-			Value:     valueBytes,
-			ExpiredAt: expiredAt,
-			CreatedAt: &now,
-			UpdatedAt: &now,
-			Status:    StatusActive,
+	expiredAt := kv.expiry(ttl)
+	var oldValue any
+	err = kv.db.DB.Transaction(func(tx *gorm.DB) error {
+		store, err := lockRow(tx, kv.group(), key)
+		if err != nil {
+			return err
 		}
-		err = tx.Create(store).Error
-	}
-
+		if store.live() {
+			if err := json.Unmarshal(store.Value, &oldValue); err != nil {
+				return err
+			}
+		}
+		return write(tx, store, valueBytes, expiredAt)
+	})
 	if err != nil {
-		tx.Rollback()
 		return nil, err
 	}
-
-	if err := tx.Commit().Error; err != nil {
-		return nil, err
-	}
-
 	return oldValue, nil
 }
 
@@ -346,107 +254,56 @@ func (kv *KV) Incr(key string) (int64, error) {
 	return kv.IncrBy(key, 1)
 }
 
+// errNotInteger is returned when IncrBy finds a value that is not an integer.
+var errNotInteger = errors.New("value is not an integer or out of range")
+
 // IncrBy increments the integer value of a key by the given amount.
 // Redis compatible: INCRBY key increment
-// If the key does not exist, it is set to 0 before performing the operation.
+// If the key does not exist (or is deleted or expired), it is set to 0 before
+// performing the operation and has no expiry; a live key keeps its expiry.
+// The row is locked for the read and the write, so concurrent increments from
+// any number of goroutines or processes are exact.
 // Returns the new value after the increment.
 func (kv *KV) IncrBy(key string, increment int64) (int64, error) {
-	group := kv.group()
-
-	// Start a transaction
-	tx := kv.db.DB.Begin()
-	if tx.Error != nil {
-		return 0, tx.Error
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
+	var newValue int64
+	err := kv.db.DB.Transaction(func(tx *gorm.DB) error {
+		store, err := lockRow(tx, kv.group(), key)
+		if err != nil {
+			return err
 		}
-	}()
 
-	// Get the current value
-	var store KVStore
-	err := tx.Where("\"group\" = ? AND \"key\" = ? AND status = ?", group, key, StatusActive).First(&store).Error
-
-	var currentValue int64 = 0
-	var storeExists bool
-
-	if err == nil {
-		storeExists = true
-		// Check if expired
-		if store.ExpiredAt != nil && store.ExpiredAt.Before(time.Now().UTC()) {
-			currentValue = 0
-		} else {
-			// Try to parse as number
-			var rawValue any
-			if err := json.Unmarshal(store.Value, &rawValue); err != nil {
-				tx.Rollback()
-				return 0, errors.New("value is not an integer or out of range")
+		var current int64
+		expiredAt := store.ExpiredAt
+		if store.live() {
+			var raw any
+			if err := json.Unmarshal(store.Value, &raw); err != nil {
+				return errNotInteger
 			}
-
-			switch v := rawValue.(type) {
+			switch v := raw.(type) {
 			case float64:
-				currentValue = int64(v)
+				current = int64(v)
 			case string:
-				currentValue, err = strconv.ParseInt(v, 10, 64)
+				current, err = strconv.ParseInt(v, 10, 64)
 				if err != nil {
-					tx.Rollback()
-					return 0, errors.New("value is not an integer or out of range")
+					return errNotInteger
 				}
 			default:
-				tx.Rollback()
-				return 0, errors.New("value is not an integer or out of range")
+				return errNotInteger
 			}
+		} else {
+			expiredAt = nil
 		}
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		tx.Rollback()
-		return 0, err
-	}
 
-	// Increment the value
-	newValue := currentValue + increment
-
-	// Marshal the new value
-	valueBytes, err := json.Marshal(newValue)
-	if err != nil {
-		tx.Rollback()
-		return 0, err
-	}
-
-	now := time.Now().UTC()
-
-	if storeExists {
-		// Update existing store
-		err = tx.Model(&KVStore{}).
-			Where("id = ?", store.Id).
-			Updates(map[string]any{
-				"value":      valueBytes,
-				"updated_at": &now,
-				"status":     StatusActive,
-			}).Error
-	} else {
-		// Create new store
-		newStore := &KVStore{
-			Id:        uuid.New().String(),
-			Group:     group,
-			Key:       key,
-			Value:     valueBytes,
-			CreatedAt: &now,
-			UpdatedAt: &now,
-			Status:    StatusActive,
+		newValue = current + increment
+		valueBytes, err := json.Marshal(newValue)
+		if err != nil {
+			return err
 		}
-		err = tx.Create(newStore).Error
-	}
-
+		return write(tx, store, valueBytes, expiredAt)
+	})
 	if err != nil {
-		tx.Rollback()
 		return 0, err
 	}
-
-	if err := tx.Commit().Error; err != nil {
-		return 0, err
-	}
-
 	return newValue, nil
 }
 
