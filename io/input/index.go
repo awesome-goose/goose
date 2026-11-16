@@ -2,6 +2,7 @@ package input
 
 import (
 	"bytes"
+	gocontext "context"
 	"encoding/json"
 	stderrors "errors"
 	"io"
@@ -18,6 +19,10 @@ import (
 type Input struct {
 	context types.Context
 }
+
+// contextType is context.Context, the type of a DTO field bound to the
+// request's context.
+var contextType = reflect.TypeOf((*gocontext.Context)(nil)).Elem()
 
 func NewInput(context types.Context) *Input {
 	return &Input{context}
@@ -84,6 +89,15 @@ func (i *Input) Populate(payload any) error {
 		}
 
 		given, err := func() (bool, error) {
+			// A field of type context.Context is the request's context
+			// (types.RequestContext): cancelled when the client goes away,
+			// carrying the request's deadline. It needs no tag, and it is not
+			// the caller's to send.
+			if fieldValue.Type() == contextType {
+				fieldValue.Set(reflect.ValueOf(types.RequestContext(i.context)))
+				return true, nil
+			}
+
 			// raw:"body" hands over the request body exactly as received — for
 			// binary uploads, which are neither JSON nor form data. The field
 			// must be []byte or string.

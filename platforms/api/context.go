@@ -27,6 +27,13 @@ func (c *Context) Response() types.Response {
 	return c.response
 }
 
+// Context returns the request's context.Context (types.ContextCarrier): it is
+// cancelled when the client disconnects or the server shuts down, and carries
+// the values set with SetValue.
+func (c *Context) Context() context.Context {
+	return c.request.raw.Context()
+}
+
 func (c *Context) SetValue(key any, value any) {
 	c.request.raw = c.request.raw.WithContext(context.WithValue(c.request.raw.Context(), key, value))
 }
