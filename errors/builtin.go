@@ -635,6 +635,24 @@ var (
 		"The column name contains invalid characters",
 		"Use alphanumeric characters and underscores only",
 	)
+	ErrTenantRequired = New(
+		"TENANT_REQUIRED",
+		"Tenant scope required",
+		"The entity is tenant-owned and was used without a tenant: no query runs unscoped",
+		"Call ForTenant(id) with the caller's tenant, or AcrossTenants() for a system job that really spans tenants",
+	)
+	ErrTenantMismatch = New(
+		"TENANT_MISMATCH",
+		"Tenant mismatch",
+		"The row belongs to, or names, a tenant other than the one the entity is bound to",
+		"Write the row through an entity bound to its own tenant",
+	)
+	ErrInvalidJSONPath = New(
+		"INVALID_JSON_PATH",
+		"Invalid JSON path",
+		"A JSON path key is empty or contains characters outside letters, digits, underscore, hyphen, dot and space",
+		"Pass each key of the path as its own argument",
+	)
 	ErrFailedToCheckMigrationStatus = New(
 		"FAILED_TO_CHECK_MIGRATION_STATUS",
 		"Failed to check migration status",

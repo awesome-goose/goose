@@ -47,6 +47,7 @@ type Entity[T any] struct {
 	morphs     map[string]func(*T)
 	hooks      map[string]func(*T) error
 	sort       string
+	tenant     tenantState
 
 	log   types.Log `inject:""`
 	query *Query    `inject:""`
@@ -118,6 +119,7 @@ func (r *Entity[T]) Tx(fn func(*Entity[T]) error) error {
 			morphs:     r.morphs,
 			hooks:      r.hooks,
 			sort:       r.sort,
+			tenant:     r.tenant,
 			query:      &Query{db: &Db{DB: tx, log: r.query.db.log}, log: r.log, pending: buf},
 			log:        r.log,
 		}
@@ -133,6 +135,10 @@ func (r *Entity[T]) Tx(fn func(*Entity[T]) error) error {
 // Exists checks if any entity matches the query.
 // If no args provided, treats query as an ID.
 func (r *Entity[T]) Exists(query string, args ...any) (bool, error) {
+	if err := r.tenantGuard(); err != nil {
+		return false, err
+	}
+
 	var count int64
 	entity := new(T)
 
@@ -163,6 +169,10 @@ func (r *Entity[T]) Exists(query string, args ...any) (bool, error) {
 // Count returns the number of entities matching the query.
 // If no args provided, treats query as an ID.
 func (r *Entity[T]) Count(query string, args ...any) (int64, error) {
+	if err := r.tenantGuard(); err != nil {
+		return 0, err
+	}
+
 	var count int64
 	entity := new(T)
 
@@ -189,6 +199,10 @@ func (r *Entity[T]) Count(query string, args ...any) (int64, error) {
 
 // Sum returns the sum of a column for entities matching the query
 func (r *Entity[T]) Sum(column string, query string, args ...any) (int64, error) {
+	if err := r.tenantGuard(); err != nil {
+		return 0, err
+	}
+
 	if !validIdentifier.MatchString(column) {
 		return 0, fmt.Errorf("invalid column name: %s", column)
 	}
@@ -219,6 +233,10 @@ func (r *Entity[T]) Sum(column string, query string, args ...any) (int64, error)
 
 // Avg returns the average of a column for entities matching the query
 func (r *Entity[T]) Avg(column string, query string, args ...any) (float64, error) {
+	if err := r.tenantGuard(); err != nil {
+		return 0, err
+	}
+
 	if !validIdentifier.MatchString(column) {
 		return 0, fmt.Errorf("invalid column name: %s", column)
 	}
@@ -249,6 +267,10 @@ func (r *Entity[T]) Avg(column string, query string, args ...any) (float64, erro
 
 // Min returns the minimum value of a column for entities matching the query
 func (r *Entity[T]) Min(column string, query string, args ...any) (int64, error) {
+	if err := r.tenantGuard(); err != nil {
+		return 0, err
+	}
+
 	if !validIdentifier.MatchString(column) {
 		return 0, fmt.Errorf("invalid column name: %s", column)
 	}
@@ -282,6 +304,10 @@ func (r *Entity[T]) Min(column string, query string, args ...any) (int64, error)
 
 // Max returns the maximum value of a column for entities matching the query
 func (r *Entity[T]) Max(column string, query string, args ...any) (int64, error) {
+	if err := r.tenantGuard(); err != nil {
+		return 0, err
+	}
+
 	if !validIdentifier.MatchString(column) {
 		return 0, errors.ErrInvalidColumnName.WithMeta(column)
 	}
@@ -317,6 +343,14 @@ func (r *Entity[T]) Max(column string, query string, args ...any) (int64, error)
 func (r *Entity[T]) Insert(entities ...*T) error {
 	if len(entities) == 0 {
 		return nil
+	}
+	if err := r.tenantGuard(); err != nil {
+		return err
+	}
+	for _, entity := range entities {
+		if err := r.tenantStamp(entity); err != nil {
+			return err
+		}
 	}
 
 	// Call BeforeCreate morphs and hooks
@@ -360,6 +394,17 @@ func (r *Entity[T]) Upsert(entities ...*T) error {
 	if len(entities) == 0 {
 		return nil
 	}
+	if err := r.tenantGuard(); err != nil {
+		return err
+	}
+	for _, entity := range entities {
+		if err := r.tenantStamp(entity); err != nil {
+			return err
+		}
+		if err := r.tenantOwns(entity); err != nil {
+			return err
+		}
+	}
 
 	for _, entity := range entities {
 		// Call BeforeCreate morph (used for both insert and update in upsert)
@@ -400,6 +445,13 @@ func (r *Entity[T]) Upsert(entities ...*T) error {
 // Update modifies entities matching the query.
 // If no args provided, treats query as an ID.
 func (r *Entity[T]) Update(changes *T, query string, args ...any) (int64, error) {
+	if err := r.tenantGuard(); err != nil {
+		return 0, err
+	}
+	if err := r.tenantCheck(changes); err != nil {
+		return 0, err
+	}
+
 	// Call BeforeUpdate morph if registered
 	if morph, ok := r.morphs[BeforeUpdate]; ok {
 		morph(changes)
@@ -450,6 +502,10 @@ func (r *Entity[T]) Update(changes *T, query string, args ...any) (int64, error)
 // First retrieves the first entity matching the query.
 // If no args provided, treats query as an ID.
 func (r *Entity[T]) First(query string, args ...any) (*T, error) {
+	if err := r.tenantGuard(); err != nil {
+		return nil, err
+	}
+
 	entity := new(T)
 
 	// Call BeforeRead morph if registered
@@ -515,6 +571,10 @@ func (r *Entity[T]) First(query string, args ...any) (*T, error) {
 // Last retrieves the last entity matching the query.
 // If no args provided, treats query as an ID.
 func (r *Entity[T]) Last(query string, args ...any) (*T, error) {
+	if err := r.tenantGuard(); err != nil {
+		return nil, err
+	}
+
 	entity := new(T)
 
 	// Call BeforeRead morph if registered
@@ -604,6 +664,10 @@ func (r *Entity[T]) All() ([]T, error) {
 
 // Find retrieves entities with pagination support
 func (r *Entity[T]) Find(offset int, limit int, query string, args ...any) ([]T, error) {
+	if err := r.tenantGuard(); err != nil {
+		return nil, err
+	}
+
 	var entities []T
 	entity := new(T)
 
@@ -676,6 +740,10 @@ func (r *Entity[T]) Find(offset int, limit int, query string, args ...any) ([]T,
 // Delete removes entities matching the query.
 // If no args provided, treats query as an ID.
 func (r *Entity[T]) Delete(query string, args ...any) (int64, error) {
+	if err := r.tenantGuard(); err != nil {
+		return 0, err
+	}
+
 	entity := new(T)
 	var q *gorm.DB
 
@@ -820,6 +888,11 @@ func (r *Entity[T]) BuildQuery(queries map[string]string) (string, []any) {
 	)
 	if r.scope != nil {
 		scopeQuery, scopeArgs = r.scope()
+	}
+	if r.tenantGuard() != nil {
+		// BuildQuery has no error to return: an unbound tenant-owned entity
+		// builds a query that matches nothing.
+		scopeQuery, scopeArgs = "1 = 0", nil
 	}
 
 	return BuildQuery(queries, r.searchable, r.Name(), scopeQuery, scopeArgs)
