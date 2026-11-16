@@ -1,6 +1,7 @@
 package testing
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/awesome-goose/goose/types"
@@ -11,6 +12,7 @@ type MockContext struct {
 	request  *MockRequest
 	response *MockResponse
 	values   map[any]any
+	ctx      context.Context
 }
 
 // NewMockContext creates a new mock context
@@ -20,6 +22,22 @@ func NewMockContext() *MockContext {
 		response: NewMockResponse(),
 		values:   make(map[any]any),
 	}
+}
+
+// Context returns the request context set with WithContext, or
+// context.Background() (types.ContextCarrier).
+func (c *MockContext) Context() context.Context {
+	if c.ctx == nil {
+		return context.Background()
+	}
+	return c.ctx
+}
+
+// WithContext sets the request context a handler under test sees: pass one
+// that is cancelled or has a deadline to test that the handler stops.
+func (c *MockContext) WithContext(ctx context.Context) *MockContext {
+	c.ctx = ctx
+	return c
 }
 
 // Request returns the mock request
