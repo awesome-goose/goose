@@ -131,6 +131,13 @@ func (r *Entity[T]) AcrossTenants() *Entity[T] {
 	return &clone
 }
 
+// RequiresTenant reports whether RequireTenant was called, and its column:
+// a generic layer (core/crud) uses it to bind the entity to the caller's
+// tenant before every query.
+func (r *Entity[T]) RequiresTenant() (column string, required bool) {
+	return r.tenant.column, r.tenant.required
+}
+
 // TenantBound reports the tenant value the entity is bound to, if any.
 func (r *Entity[T]) TenantBound() (any, bool) {
 	return r.tenant.value, r.tenant.bound
