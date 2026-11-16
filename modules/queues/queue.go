@@ -1040,3 +1040,14 @@ func (q *Queue) TotalActiveWorkers() int {
 	}
 	return total
 }
+
+// NewQueue is a Queue over an open *gorm.DB, outside the container: for a
+// library that drives the queue itself (an event bridge, a tool) and for its
+// tests, which have no DI to inject one. config may be nil (defaults). The
+// queue tables must exist (the module's migrations, or AutoMigrate of
+// QueueQueue, QueueJob and QueueLog). Stop its workers with Shutdown.
+func NewQueue(db *gorm.DB, config *Config) *Queue {
+	q := &Queue{db: &sql.Db{DB: db}, config: config}
+	q.Initialize()
+	return q
+}
