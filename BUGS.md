@@ -817,6 +817,30 @@ query), `types.RawQuery(req)` falls back to the queries encoded again on other p
 
 ---
 
+## 29. Two types with one schema name were renamed by package, in registration order — FIXED (breaking for such documents)
+
+**Files:** `openapi/build.go`, `openapi/schema.go`.
+
+When two different Go types had the same component name, the second one documented got its package's last
+element in front (`Money` and `CoreMoney`). Which one was "second" depended on the order routes registered,
+so a host that added a route could rename another library's schema and break every client generated from the
+committed document (found by Yan, Wave 3: a second `Money` turned the wallet's refs into `CoreMoney`).
+
+**Changed:** two different types under one name are now an error from `Build`/`FromRoutes` that names both
+types. A type picks its own name by implementing `openapi.Named` (`OpenAPIName() string`). A document that
+had no clash is unchanged; one that had a clash now fails to build until one of the types is named.
+
+**Added with it** (Yan needed both to document its real responses):
+- `Operation.Responses map[int]any`: more success statuses than `Status`, each with its body (nil = the same
+  body as `Response`), for a handler that answers 201 when it creates and 200 when the thing already existed.
+  A status outside 2xx is an error.
+- `Operation.ContentType`: the media type of a success body that isn't JSON (a file download); the body is
+  documented as `{type: string, format: binary}` under that media type, without the envelope.
+
+Tests: `openapi/responses_test.go`.
+
+---
+
 ## Not a bug, but easy to trip over
 
 - **Single-instance CLI apps take the raw argument list; multi-instance apps take `cli <command>`.**

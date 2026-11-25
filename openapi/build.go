@@ -61,11 +61,26 @@ type Operation struct {
 	Request any
 	// Status is the success status; 200 when 0.
 	Status int
+	// Responses documents more success statuses than Status, for a handler that answers
+	// one of several (201 when it creates, 200 when the thing already existed). Each value
+	// is a body like Response; nil means the same body as Response. A status equal to
+	// Status is ignored.
+	Responses map[int]any
+	// ContentType is the media type of the success body when it is not JSON, for a handler
+	// that sends a file or raw bytes ("application/octet-stream", "image/png", "*/*"). The
+	// body is then documented as binary: Response and the Envelope are not used for it.
+	ContentType string
 	// Tags replace the tag taken from the path.
 	Tags []string
 	// Deprecated marks the operation.
 	Deprecated bool
 }
+
+// Named is implemented (by value) by a type that chooses its component name, when two
+// packages' types would otherwise share one ("Money" in a wallet and in core). Two
+// different types documented under one name are an error: the document would otherwise
+// depend on which registered first.
+type Named interface{ OpenAPIName() string }
 
 // Documented is implemented by a Dto (by value) that wants to add to its operation.
 type Documented interface{ OpenAPI() Operation }
@@ -86,7 +101,7 @@ type builder struct {
 	opts    Options
 	paths   map[string]map[string]any
 	schemas map[string]any
-	// seen names the Go type behind each schema name, to give a clash a distinct name
+	// seen names the Go type behind each schema name, so two types given one name are an error
 	seen map[string]reflect.Type
 	ids  map[string]int
 	tags map[string]bool
@@ -369,23 +384,28 @@ func (b *builder) operationWith(r types.Route, path string, chain []types.Middle
 	if status == 0 {
 		status = 200
 	}
-	resp := map[string]any{"description": "Success"}
-	success := map[string]any{}
-	if extra.Response != nil {
-		success = b.schemaOf(reflect.TypeOf(extra.Response))
-	}
-	if b.opts.Envelope != nil {
-		success = b.opts.Envelope(success)
-	}
-	resp["content"] = map[string]any{"application/json": map[string]any{"schema": success}}
 	failure := errorSchema
 	if b.opts.Error != nil {
 		failure = b.schemaOf(reflect.TypeOf(b.opts.Error))
 	}
-	op["responses"] = map[string]any{
-		strconv.Itoa(status): resp,
+	responses := map[string]any{
+		strconv.Itoa(status): b.success(extra.Response, extra.ContentType),
 		"default":            map[string]any{"description": "An error: a status code and a message", "content": map[string]any{"application/json": map[string]any{"schema": failure}}},
 	}
+	for code, body := range extra.Responses {
+		if code == status {
+			continue
+		}
+		if code < 200 || code > 299 {
+			b.err = append(b.err, fmt.Sprintf("%s %s: Responses has %d, which is not a success status", strings.ToUpper(method), full, code))
+			continue
+		}
+		if body == nil {
+			body = extra.Response
+		}
+		responses[strconv.Itoa(code)] = b.success(body, extra.ContentType)
+	}
+	op["responses"] = responses
 
 	if b.paths[templ] == nil {
 		b.paths[templ] = map[string]any{}
@@ -395,6 +415,25 @@ func (b *builder) operationWith(r types.Route, path string, chain []types.Middle
 		return
 	}
 	b.paths[templ][method] = op
+}
+
+// success is one success response: a JSON body (in the host's envelope) of the type of
+// body, or, with a contentType that is not JSON, a binary body of that media type.
+func (b *builder) success(body any, contentType string) map[string]any {
+	resp := map[string]any{"description": "Success"}
+	if contentType != "" && contentType != "application/json" {
+		resp["content"] = map[string]any{contentType: map[string]any{"schema": map[string]any{"type": "string", "format": "binary"}}}
+		return resp
+	}
+	schema := map[string]any{}
+	if body != nil {
+		schema = b.schemaOf(reflect.TypeOf(body))
+	}
+	if b.opts.Envelope != nil {
+		schema = b.opts.Envelope(schema)
+	}
+	resp["content"] = map[string]any{"application/json": map[string]any{"schema": schema}}
+	return resp
 }
 
 var errorSchema = map[string]any{"type": "object", "properties": map[string]any{
@@ -530,6 +569,12 @@ func merge(base, over Operation) Operation {
 	}
 	if over.Status != 0 {
 		base.Status = over.Status
+	}
+	if len(over.Responses) > 0 {
+		base.Responses = over.Responses
+	}
+	if over.ContentType != "" {
+		base.ContentType = over.ContentType
 	}
 	if len(over.Tags) > 0 {
 		base.Tags = over.Tags

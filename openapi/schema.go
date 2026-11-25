@@ -2,6 +2,7 @@ package openapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"regexp"
 	"sort"
@@ -272,6 +273,9 @@ var typeArgs = regexp.MustCompile(`[A-Za-z0-9_./-]*\.`)
 // componentName is a struct's name as a component name. A generic instance such as
 // Page[github.com/x/pkg.Post] becomes PagePost: component names allow only [A-Za-z0-9._-].
 func componentName(t reflect.Type) string {
+	if n, ok := reflect.Zero(t).Interface().(Named); ok && n.OpenAPIName() != "" {
+		return n.OpenAPIName()
+	}
 	name := t.Name()
 	if !strings.Contains(name, "[") {
 		return name
@@ -291,9 +295,7 @@ func (b *builder) ref(t reflect.Type) map[string]any {
 		return b.objectOf(t)
 	}
 	if prev, ok := b.seen[name]; ok && prev != t {
-		// two different types with one name: qualify by the package's last element
-		pkg := t.PkgPath()
-		name = upperFirst(sanitize(pkg[strings.LastIndex(pkg, "/")+1:])) + name
+		b.err = append(b.err, fmt.Sprintf("schema %q is two types, %s and %s: give one an OpenAPIName() (openapi.Named)", name, typeString(prev), typeString(t)))
 	}
 	if _, ok := b.seen[name]; !ok {
 		b.seen[name] = t
@@ -347,4 +349,12 @@ func (b *builder) objectOf(t reflect.Type) map[string]any {
 		out["required"] = toAny(req)
 	}
 	return out
+}
+
+// typeString names a type with its full package path, for an error message.
+func typeString(t reflect.Type) string {
+	if t.PkgPath() == "" {
+		return t.String()
+	}
+	return t.PkgPath() + "." + t.Name()
 }
