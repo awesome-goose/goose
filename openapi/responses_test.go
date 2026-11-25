@@ -66,9 +66,13 @@ func TestTwoTypesWithOneNameAreAnErrorUnlessOneIsNamed(t *testing.T) {
 	_, err := openapi.FromRoutes([]types.Route{
 		router.Get("/a/:id", func(d *DocDto) types.Output { return nil }),
 		router.Get("/b", func(d *ClashDto) types.Output { return nil }),
+		router.Get("/c", func(d *ClashDto) types.Output { return nil }),
 	}, openapi.Options{})
 	if err == nil || !strings.Contains(err.Error(), `schema "Thing" is two types`) || !strings.Contains(err.Error(), "openapi/internal/clash.Thing") {
 		t.Fatalf("want a clash error naming both types, got %v", err)
+	}
+	if n := strings.Count(err.Error(), "is two types"); n != 1 {
+		t.Errorf("a clash is reported once, got %d: %v", n, err)
 	}
 	d := build(t, []types.Route{
 		router.Get("/a/:id", func(d *DocDto) types.Output { return nil }),

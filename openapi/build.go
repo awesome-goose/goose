@@ -103,6 +103,8 @@ type builder struct {
 	schemas map[string]any
 	// seen names the Go type behind each schema name, so two types given one name are an error
 	seen map[string]reflect.Type
+	// clashes holds each name clash already reported, so it is reported once
+	clashes map[string]bool
 	ids  map[string]int
 	tags map[string]bool
 	err  []string
@@ -115,7 +117,7 @@ func Build(k types.Kernel, o Options) (Document, error) { return FromRoutes(k.Ro
 
 // FromRoutes documents a route table. It needs no running server: handlers are read by type.
 func FromRoutes(routes []types.Route, o Options) (Document, error) {
-	b := &builder{opts: o, paths: map[string]map[string]any{}, schemas: map[string]any{}, seen: map[string]reflect.Type{}, ids: map[string]int{}, tags: map[string]bool{}}
+	b := &builder{opts: o, paths: map[string]map[string]any{}, schemas: map[string]any{}, seen: map[string]reflect.Type{}, clashes: map[string]bool{}, ids: map[string]int{}, tags: map[string]bool{}}
 	b.walk(routes, "")
 	if len(b.err) > 0 {
 		sort.Strings(b.err)

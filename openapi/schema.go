@@ -295,7 +295,11 @@ func (b *builder) ref(t reflect.Type) map[string]any {
 		return b.objectOf(t)
 	}
 	if prev, ok := b.seen[name]; ok && prev != t {
-		b.err = append(b.err, fmt.Sprintf("schema %q is two types, %s and %s: give one an OpenAPIName() (openapi.Named)", name, typeString(prev), typeString(t)))
+		msg := fmt.Sprintf("schema %q is two types, %s and %s: give one an OpenAPIName() (openapi.Named)", name, typeString(prev), typeString(t))
+		if !b.clashes[msg] {
+			b.clashes[msg] = true
+			b.err = append(b.err, msg)
+		}
 	}
 	if _, ok := b.seen[name]; !ok {
 		b.seen[name] = t
