@@ -7,6 +7,8 @@ import (
 	"github.com/awesome-goose/goose/modules/router"
 	"github.com/awesome-goose/goose/openapi"
 	"github.com/awesome-goose/goose/openapi/internal/clash"
+	"github.com/awesome-goose/goose/openapi/internal/clash/more"
+	otherclash "github.com/awesome-goose/goose/openapi/internal/other/clash"
 	"github.com/awesome-goose/goose/types"
 )
 
@@ -62,22 +64,62 @@ func TestANonSuccessExtraStatusIsAnError(t *testing.T) {
 	}
 }
 
-func TestTwoTypesWithOneNameAreAnErrorUnlessOneIsNamed(t *testing.T) {
-	_, err := openapi.FromRoutes([]types.Route{
+type MoreDto struct{}
+
+func (MoreDto) OpenAPI() openapi.Operation { return openapi.Operation{Response: more.Thing{}} }
+
+type AgainDto struct{}
+
+func (AgainDto) OpenAPI() openapi.Operation { return openapi.Operation{Response: otherclash.Thing{}} }
+
+func clashRoutes(last types.Route) []types.Route {
+	return []types.Route{
 		router.Get("/a/:id", func(d *DocDto) types.Output { return nil }),
 		router.Get("/b", func(d *ClashDto) types.Output { return nil }),
 		router.Get("/c", func(d *ClashDto) types.Output { return nil }),
-	}, openapi.Options{})
+		last,
+	}
+}
+
+func TestEveryTypeWithATakenNameGetsItsOwnSchema(t *testing.T) {
+	d := build(t, clashRoutes(router.Get("/d", func(d *MoreDto) types.Output { return nil })))
+	d2 := build(t, append(clashRoutes(router.Get("/d", func(d *MoreDto) types.Output { return nil })), router.Get("/e", func(d *AgainDto) types.Output { return nil })))
+	schemas := at(d2, "components", "schemas").(map[string]any)
+	refs := map[string]string{}
+	for path, want := range map[string]string{"/api/a/{id}": "Thing", "/api/b": "ClashThing", "/api/d": "MoreThing", "/api/e": "OtherClashThing"} {
+		ref, _ := at(d2, "paths", path, "get", "responses", "200", "content", "application/json", "schema", "$ref").(string)
+		if path == "/api/a/{id}" {
+			ref, _ = at(d2, "paths", path, "get", "responses", "201", "content", "application/json", "schema", "$ref").(string)
+		}
+		name := strings.TrimPrefix(ref, "#/components/schemas/")
+		if schemas[name] == nil || refs[name] != "" {
+			t.Fatalf("%s: %q (taken by %s)", path, ref, refs[name])
+		}
+		refs[name] = path
+		if name != want {
+			t.Errorf("%s: %s, want %s", path, name, want)
+		}
+	}
+	if at(d, "components", "schemas", "MoreThing") == nil {
+		t.Errorf("three types: %v", at(d, "components", "schemas"))
+	}
+}
+
+func TestStrictNamesMakesAClashAnErrorUnlessOneIsNamed(t *testing.T) {
+	_, err := openapi.FromRoutes(clashRoutes(router.Get("/d", func(d *ClashDto) types.Output { return nil })), openapi.Options{StrictNames: true})
 	if err == nil || !strings.Contains(err.Error(), `schema "Thing" is two types`) || !strings.Contains(err.Error(), "openapi/internal/clash.Thing") {
 		t.Fatalf("want a clash error naming both types, got %v", err)
 	}
 	if n := strings.Count(err.Error(), "is two types"); n != 1 {
 		t.Errorf("a clash is reported once, got %d: %v", n, err)
 	}
-	d := build(t, []types.Route{
+	d, err := openapi.FromRoutes([]types.Route{
 		router.Get("/a/:id", func(d *DocDto) types.Output { return nil }),
 		router.Get("/b", func(d *NamedDto) types.Output { return nil }),
-	})
+	}, openapi.Options{StrictNames: true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if at(d, "components", "schemas", "ClashThing") == nil || at(d, "components", "schemas", "Thing") == nil {
 		t.Errorf("both components: %v", at(d, "components", "schemas"))
 	}

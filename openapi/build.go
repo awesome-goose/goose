@@ -41,6 +41,11 @@ type Options struct {
 	// hosts whose responses put the handler's data inside an envelope. It gets the schema
 	// the operation documents ({} when it documents none) and returns the one to write.
 	Envelope func(body map[string]any) map[string]any
+	// StrictNames makes two different types documented under one component name an
+	// error naming both, instead of qualifying the second by its package. Use it to keep a
+	// document's names from depending on which type registered first; openapi.Named lets a
+	// type choose its name.
+	StrictNames bool
 	// OperationID, when set, names every operation from its method ("get"), its templated
 	// path with the prefix ("/api/apps/x/{id}") and its handler's method name ("" for a func).
 	// Two operations given one name are an error. Nil keeps the handler-name ids. Use
@@ -77,9 +82,9 @@ type Operation struct {
 }
 
 // Named is implemented (by value) by a type that chooses its component name, when two
-// packages' types would otherwise share one ("Money" in a wallet and in core). Two
-// different types documented under one name are an error: the document would otherwise
-// depend on which registered first.
+// packages' types would otherwise share one ("Money" in a wallet and in core). Without it
+// the second type documented is qualified by its package, so its name depends on which
+// registered first; Options.StrictNames makes that an error.
 type Named interface{ OpenAPIName() string }
 
 // Documented is implemented by a Dto (by value) that wants to add to its operation.
@@ -101,13 +106,13 @@ type builder struct {
 	opts    Options
 	paths   map[string]map[string]any
 	schemas map[string]any
-	// seen names the Go type behind each schema name, so two types given one name are an error
+	// seen names the Go type behind each schema name, so a second type gets a distinct name
 	seen map[string]reflect.Type
 	// clashes holds each name clash already reported, so it is reported once
 	clashes map[string]bool
-	ids  map[string]int
-	tags map[string]bool
-	err  []string
+	ids     map[string]int
+	tags    map[string]bool
+	err     []string
 	// handlers maps "METHOD /path" to the handler documented for it
 	handlers map[string]string
 }

@@ -817,18 +817,23 @@ query), `types.RawQuery(req)` falls back to the queries encoded again on other p
 
 ---
 
-## 29. Two types with one schema name were renamed by package, in registration order — FIXED (breaking for such documents)
+## 29. Three types with one schema name shared two schemas, and names followed registration order — FIXED (additive)
 
 **Files:** `openapi/build.go`, `openapi/schema.go`.
 
 When two different Go types had the same component name, the second one documented got its package's last
-element in front (`Money` and `CoreMoney`). Which one was "second" depended on the order routes registered,
-so a host that added a route could rename another library's schema and break every client generated from the
-committed document (found by Yan, Wave 3: a second `Money` turned the wallet's refs into `CoreMoney`).
+element in front (`Money` and `CoreMoney`). Two problems (found by Yan, Wave 3 and Wave 4):
+- With a third type whose package's last element matched the second's, both got the same qualified name and
+  the third type's references pointed at the second's schema (Yan: three `Page`s as `Page` + `WorkflowPage`,
+  three `File`s as `File` + `FileFile`, three `Log`s as `Log` + `LogLog`). The document was silently wrong.
+- Which type was "second" depended on the order routes registered, so a host that added a route could rename
+  another library's schema and break clients generated from a committed document.
 
-**Changed:** two different types under one name are now an error from `Build`/`FromRoutes` that names both
-types. A type picks its own name by implementing `openapi.Named` (`OpenAPIName() string`). A document that
-had no clash is unchanged; one that had a clash now fails to build until one of the types is named.
+**Changed:** a type whose name (or qualified name) is taken is qualified by more of its package path until the
+name is free, so every type has its own schema (`ClashThing`, `MoreThing`, `OtherClashThing`). A type picks
+its own name by implementing `openapi.Named` (`OpenAPIName() string`), which also takes it out of the order
+dependence. `Options.StrictNames` makes any clash an error that names both types. Documents without a
+three-way clash are unchanged.
 
 **Added with it** (Yan needed both to document its real responses):
 - `Operation.Responses map[int]any`: more success statuses than `Status`, each with its body (nil = the same

@@ -295,11 +295,14 @@ func (b *builder) ref(t reflect.Type) map[string]any {
 		return b.objectOf(t)
 	}
 	if prev, ok := b.seen[name]; ok && prev != t {
-		msg := fmt.Sprintf("schema %q is two types, %s and %s: give one an OpenAPIName() (openapi.Named)", name, typeString(prev), typeString(t))
-		if !b.clashes[msg] {
-			b.clashes[msg] = true
-			b.err = append(b.err, msg)
+		if b.opts.StrictNames {
+			msg := fmt.Sprintf("schema %q is two types, %s and %s: give one an OpenAPIName() (openapi.Named)", name, typeString(prev), typeString(t))
+			if !b.clashes[msg] {
+				b.clashes[msg] = true
+				b.err = append(b.err, msg)
+			}
 		}
+		name = b.qualified(name, t)
 	}
 	if _, ok := b.seen[name]; !ok {
 		b.seen[name] = t
@@ -361,4 +364,25 @@ func typeString(t reflect.Type) string {
 		return t.String()
 	}
 	return t.PkgPath() + "." + t.Name()
+}
+
+// qualified names the second type with a name already taken: the base name after the
+// shortest run of its package path's last elements that no other type uses, so three
+// types called Page get three schemas, never one schema standing for two types.
+func (b *builder) qualified(name string, t reflect.Type) string {
+	parts := strings.Split(t.PkgPath(), "/")
+	prefix := ""
+	for i := len(parts) - 1; i >= 0; i-- {
+		prefix = upperFirst(sanitize(parts[i])) + prefix
+		candidate := prefix + name
+		if prev, ok := b.seen[candidate]; !ok || prev == t {
+			return candidate
+		}
+	}
+	for n := 2; ; n++ {
+		candidate := prefix + name + strconv.Itoa(n)
+		if prev, ok := b.seen[candidate]; !ok || prev == t {
+			return candidate
+		}
+	}
 }
